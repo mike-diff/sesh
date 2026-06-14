@@ -78,6 +78,20 @@ func TestWorkedOn(t *testing.T) {
 	}
 }
 
+// TestDriveJudgeCancel: Ctrl-C during the judge phase pauses the drive instead
+// of reading as a dead judge. Breaker: drop the isCanceled check in the judge
+// error path and a cancel returns driveBlocked, not driveInterrupted.
+func TestDriveJudgeCancel(t *testing.T) {
+	p := &seqChat{fns: []func(context.Context) (agent.Reply, error){
+		func(context.Context) (agent.Reply, error) { return agent.Reply{}, context.Canceled }, // the judge call
+	}}
+	r := driveRepl(t, p, workTurns())
+	got := drive(r, driveConfig{request: "fix the bug", maxIters: 25, say: func(string, ...any) {}}, workTurns())
+	if got != driveInterrupted {
+		t.Fatalf("a cancelled judge must pause the drive (driveInterrupted=%d), got %d", driveInterrupted, got)
+	}
+}
+
 func TestParseVerdict(t *testing.T) {
 	v, err := parseVerdict(`{"done": true, "blocked": false, "reason": "tests pass"}`)
 	if err != nil || !v.Done || v.Reason != "tests pass" {
