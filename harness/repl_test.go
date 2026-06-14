@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -87,6 +88,37 @@ func TestSlashCommandCompletionCoversDispatch(t *testing.T) {
 	}
 	if got := r.completions("/up"); len(got) != 1 || strings.TrimSpace(got[0]) != "/update" {
 		t.Fatalf("/up should complete to /update, got %v", got)
+	}
+}
+
+// TestCustomModelPersists: a user-typed model is saved per provider, stays in
+// the /model choices, and only one is kept. Breaker: stop writing
+// Profile.CustomModel and the choice vanishes on the next session.
+func TestCustomModelPersists(t *testing.T) {
+	r := newTestRepl(t)
+	saveGlobalProviders(ProvidersConfig{Default: "p", Providers: map[string]Profile{
+		"p": {Protocol: "openai", URL: "http://127.0.0.1:0", Model: "m1"},
+	}})
+	r.pcfg = loadProviders()
+	r.current, r.protocol, r.url = "p", "openai", "http://127.0.0.1:0"
+
+	r.setCustomModel("my-custom-model")
+	if r.model != "my-custom-model" {
+		t.Fatalf("a custom model must become active: %q", r.model)
+	}
+	if got := loadGlobalProviders().Providers["p"].CustomModel; got != "my-custom-model" {
+		t.Fatalf("a custom model must persist to the profile: %q", got)
+	}
+	if !slices.Contains(r.modelChoices(), "my-custom-model") {
+		t.Fatalf("a custom model must stay in /model choices: %v", r.modelChoices())
+	}
+
+	r.setCustomModel("second") // only one per provider: replaces the first
+	if got := loadGlobalProviders().Providers["p"].CustomModel; got != "second" {
+		t.Fatalf("only one custom model per provider, want \"second\": %q", got)
+	}
+	if slices.Contains(r.modelChoices(), "my-custom-model") {
+		t.Fatalf("the replaced custom model should be gone: %v", r.modelChoices())
 	}
 }
 
