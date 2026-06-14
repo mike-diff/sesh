@@ -455,11 +455,23 @@ func (r *repl) updateCmd() {
 	emit("%s  updated; reloading into this session...%s\n", dim, reset)
 	releaseLock(r.sess.ID) // execve keeps our PID, so the successor must be free to re-lock
 	r.con.Close()          // restore the terminal before the new image takes it
-	if err := syscall.Exec(self, args, os.Environ()); err != nil {
+	// Hand the old commit to the new image so it can confirm what changed.
+	env := append(os.Environ(), "SESH_UPDATED_FROM="+commit)
+	if err := syscall.Exec(self, args, env); err != nil {
 		// Exec returns only on failure; reclaim the lock so the session is not orphaned.
 		acquireLock(r.sess.ID)
 		fmt.Fprintf(os.Stderr, "reload failed (%v); the update is installed, restart sesh to use it\n", err)
 	}
+}
+
+// updatedNotice is the one-line confirmation a post-/update reload prints on
+// startup: the new build and the one it replaced. Empty when this start was not
+// a self-update reload (no SESH_UPDATED_FROM) or nothing actually changed.
+func updatedNotice(from, now string) string {
+	if from == "" || from == now {
+		return ""
+	}
+	return fmt.Sprintf("updated to %s (was %s)", now, from)
 }
 
 // providerCmd handles /provider and its subcommands: list, add, remove, switch.
