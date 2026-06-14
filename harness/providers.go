@@ -30,6 +30,9 @@ type Profile struct {
 	Key      string `json:"key,omitempty"`
 	KeyEnv   string `json:"key_env,omitempty"`
 	Context  int    `json:"context,omitempty"`
+	// CustomModel is one user-added model the endpoint did not list, remembered
+	// per provider so it persists and stays in /model.
+	CustomModel string `json:"custom_model,omitempty"`
 }
 
 // ProvidersConfig is a parsed providers.json: a set of named profiles and the

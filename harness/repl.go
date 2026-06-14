@@ -181,46 +181,61 @@ func (r *repl) completions(line string) []string {
 			}
 		}
 	case strings.HasPrefix(line, "/"):
-		for _, c := range []string{"/provider ", "/model ", "/reload", "/update", "/chain", "/compact", "/context ", "/handoff", "/settings", "/help", "/exit", "/quit"} {
-			if strings.HasPrefix(c, line) {
-				out = append(out, c)
+		for _, c := range slashCommands {
+			name := c.name
+			if c.arg {
+				name += " " // a space invites the argument
+			}
+			if strings.HasPrefix(name, line) {
+				out = append(out, name)
 			}
 		}
 	}
 	return out
 }
 
+// slashCommand is one in-session command. The table below is the single source
+// of truth: command() dispatches from it and completions() lists from it, so a
+// new command is tab-completable the moment it is added here, no second list to
+// keep in sync.
+type slashCommand struct {
+	name string // e.g. "/model"
+	arg  bool   // accepts a "/name <arg>" form (and tab-completes with a space)
+	quit bool   // ends the session
+	run  func(r *repl, arg string)
+}
+
+var slashCommands = []slashCommand{
+	{name: "/provider", arg: true, run: func(r *repl, a string) { r.providerCmd(a) }},
+	{name: "/model", arg: true, run: func(r *repl, a string) { r.modelCmd(a) }},
+	{name: "/reload", run: func(r *repl, _ string) { r.reloadCmd() }},
+	{name: "/update", run: func(r *repl, _ string) { r.updateCmd() }},
+	{name: "/context", arg: true, run: func(r *repl, a string) { r.contextCmd(a) }},
+	{name: "/handoff", run: func(r *repl, _ string) { r.handoff() }},
+	{name: "/chain", run: func(r *repl, _ string) { r.chainCmd() }},
+	{name: "/compact", run: func(r *repl, _ string) { r.compactCmd() }},
+	{name: "/settings", run: func(r *repl, _ string) { r.settingsCmd() }},
+	{name: "/help", run: func(r *repl, _ string) { r.helpCmd() }},
+	{name: "/exit", quit: true},
+	{name: "/quit", quit: true},
+}
+
 // command dispatches one input line. handled=false means the line is a chat
 // message for the model; quit=true means the session should end.
 func (r *repl) command(line string) (handled, quit bool) {
-	arg := func(prefix string) string { return strings.TrimSpace(strings.TrimPrefix(line, prefix)) }
-	switch {
-	case line == "exit" || line == "quit" || line == "/exit" || line == "/quit":
-		return true, true
-	case line == "/compact":
-		r.compactCmd()
-	case line == "/handoff":
-		r.handoff()
-	case line == "/chain":
-		r.chainCmd()
-	case line == "/provider" || strings.HasPrefix(line, "/provider "):
-		r.providerCmd(arg("/provider"))
-	case line == "/model" || strings.HasPrefix(line, "/model "):
-		r.modelCmd(arg("/model"))
-	case line == "/reload":
-		r.reloadCmd()
-	case line == "/update":
-		r.updateCmd()
-	case line == "/context" || strings.HasPrefix(line, "/context "):
-		r.contextCmd(arg("/context"))
-	case line == "/settings":
-		r.settingsCmd()
-	case line == "/help":
-		r.helpCmd()
-	default:
-		return false, false
+	if line == "exit" || line == "quit" {
+		return true, true // bare words, no slash
 	}
-	return true, false
+	for _, c := range slashCommands {
+		if line == c.name || (c.arg && strings.HasPrefix(line, c.name+" ")) {
+			if c.quit {
+				return true, true
+			}
+			c.run(r, strings.TrimSpace(strings.TrimPrefix(line, c.name)))
+			return true, false
+		}
+	}
+	return false, false
 }
 
 // contextCmd shows or sets the context window, the one number the whole
@@ -305,7 +320,7 @@ func (r *repl) helpCmd() {
   /provider remove <n>   delete a provider and its stored key
   /provider <name>       switch provider, same conversation
   /model                 pick a model (arrows + enter)
-  /model <id|#|substr>   switch model; the choice sticks to the provider
+  /model <id|#|substr>   switch model or add a custom one; sticks to the provider
   /reload                re-fetch the model list from the active provider
   /update                self-update, then reload into this same session
   /context [tokens]      show or set the model's context window; setting it
@@ -688,33 +703,53 @@ func stickyModel(name, model string) {
 	saveGlobalProviders(g)
 }
 
-func (r *repl) modelCmd(m string) {
-	if m == "" {
-		if len(r.models) == 0 {
-			emit("%s  current model: %s (endpoint did not list models)%s\n\n", dim, r.model, reset)
-			return
+// modelChoices is the model list the user picks from: what discovery found,
+// plus this provider's one persisted custom model (the endpoint did not list
+// it, but the user added it, so it stays selectable across restarts).
+func (r *repl) modelChoices() []string {
+	choices := r.models
+	if r.current != "" {
+		if cm := r.pcfg.Providers[r.current].CustomModel; cm != "" && !slices.Contains(choices, cm) {
+			choices = append(append([]string{}, choices...), cm)
 		}
-		idx, err := r.con.Select("model", r.models, slices.Index(r.models, r.model))
+	}
+	return choices
+}
+
+func (r *repl) modelCmd(m string) {
+	choices := r.modelChoices()
+	if m == "" {
+		const customEntry = "+ enter a custom model"
+		idx, err := r.con.Select("model", append(slices.Clone(choices), customEntry), slices.Index(choices, r.model))
 		if err != nil || idx < 0 {
 			emit("%s  (no change)%s\n\n", dim, reset)
 			return
 		}
-		if r.models[idx] == r.model {
+		if idx == len(choices) { // the custom-model entry
+			name, rerr := r.con.ReadLine("custom model> ")
+			if name = strings.TrimSpace(name); rerr != nil || name == "" {
+				emit("%s  (no change)%s\n\n", dim, reset)
+				return
+			}
+			r.setCustomModel(name)
+			return
+		}
+		if choices[idx] == r.model {
 			emit("%s  already on %s%s\n\n", dim, r.model, reset)
 			return
 		}
-		m = r.models[idx]
+		m = choices[idx]
 	}
 	var ambiguous []string
-	m, ambiguous = resolveModelArg(m, r.models)
+	m, ambiguous = resolveModelArg(m, choices)
 	if len(ambiguous) > 1 {
 		emit("%s  %q matches several models: %s%s\n\n", red, m, strings.Join(ambiguous, ", "), reset)
 		return
 	}
-	// When discovery gave us this endpoint's model list, a name that is not on
-	// it would 404 on the next turn. Catch it now, and if the model is another
-	// provider's default, the user clearly means that provider: hop to it.
-	if len(r.models) > 0 && !slices.Contains(r.models, m) {
+	// When we know this endpoint's models, a name that is not among them (nor
+	// the custom one) would 404 on the next turn. Catch it now, and if it is
+	// another provider's default, the user clearly means that provider: hop.
+	if len(choices) > 0 && !slices.Contains(choices, m) {
 		var serves []string
 		for name, prof := range r.pcfg.Providers {
 			if prof.Model == m {
@@ -730,11 +765,33 @@ func (r *repl) modelCmd(m string) {
 			emit("%s  %s is not on this endpoint; it is the default of providers %s. use /provider <name>%s\n\n",
 				red, m, strings.Join(serves, ", "), reset)
 		default:
-			emit("%s  %s is not on this endpoint (%s). /model lists what is; /provider <name> changes endpoints%s\n\n",
+			emit("%s  %s is not on this endpoint (%s). /model lists what is, or pick \"+ enter a custom model\"; /provider <name> changes endpoints%s\n\n",
 				red, m, r.current, reset)
 		}
 		return
 	}
+	r.switchModel(m)
+}
+
+// setCustomModel records a user-typed model as this provider's one custom model
+// (persisted, so it survives restarts and stays in /model), then switches to it.
+func (r *repl) setCustomModel(model string) {
+	if r.current != "" {
+		g := loadGlobalProviders()
+		if prof, ok := g.Providers[r.current]; ok {
+			prof.CustomModel = model
+			g.Providers[r.current] = prof
+			saveGlobalProviders(g)
+			r.pcfg = loadProviders()
+		}
+	}
+	r.switchModel(model)
+}
+
+// switchModel makes m the active model: rebuilds the brain, records the choice
+// on the session and the provider (sticky), and retunes the window when the
+// endpoint published one for m.
+func (r *repl) switchModel(m string) {
 	np, err := buildProvider(r.protocol, r.url, m, r.key, r.keyEnv)
 	if err != nil {
 		emit("%s  %v%s\n\n", red, err, reset)
