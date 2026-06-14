@@ -1,0 +1,66 @@
+// sesh tuning: every behavioral assumption the harness makes, in one file.
+// The defaults below live in the binary; a tuning.json states ONLY what it
+// changes, so every line here is optional. Activate by renaming to tuning.json
+// (a project .sesh/tuning.json overrides this global one, field by field).
+//
+// Comments are kept: tuning.json is the one config sesh reads but never
+// rewrites, so // and /* */ survive. (providers.json and mcp.json are rewritten
+// by the TUI, so comments there would be dropped on the next save.)
+//
+// The pressure thresholds are PERCENTAGES OF THE EFFECTIVE WINDOW, which is
+// min(model window, max_useful_context). On a big-window model the dial that
+// matters is the cap, not the percentage. The 1M profile at the bottom shows why.
+{
+  // --- Context pressure: the handoff machinery (defaults suit a ~200K model) ---
+
+  // Soft handoff: at this % of the effective window, seal and hand off to a
+  // fresh chained session at a clean turn boundary. 80 keeps a 20% reserve,
+  // the point every production harness converged on: enough room to write a
+  // clean handoff seed before the tail of the window starts to rot.
+  "handoff_pct": 80,
+
+  // Hard handoff: force the handoff regardless of boundary quality. The 10%
+  // gap above the soft threshold absorbs one runaway turn (a long reasoning
+  // burst or a big tool read) without blowing past the window.
+  "hard_pct": 90,
+
+  // Cap on the effective window. Does NOT bind on a 200K model (its real
+  // window is smaller). Its job is to protect big-window models: an advertised
+  // length is far longer than the length a model still reasons well over, and
+  // past this size measured reasoning quality falls regardless of the label.
+  "max_useful_context": 250000,
+
+  // Stand-in window when a provider neither declares nor discovers one
+  // (the OpenAI API and Ollama publish nothing). Assume modest, not huge, so
+  // an unknown model hands off early instead of rotting silently.
+  "assumed_context": 200000
+
+  // ------------------------------------------------------------------------
+  // PROFILE: 1M-context reasoning models
+  //
+  // A 1M advertised window is not 1M of usable reasoning. Effective length runs
+  // ~50-65% of advertised (RULER), and multi-step reasoning over distant context
+  // degrades past ~400-500K tokens even on the strongest models (Gemini 2.5
+  // Pro). Agentic coding is the worst case for this rot: tool dumps and
+  // near-duplicate code are exactly the distractors that steepen it, and a
+  // reasoning model's thinking tokens burn the window between the boundaries
+  // where sesh measures. So cap below the knee and let the percentages work on
+  // the real number. Uncomment and tune:
+  //
+  //   "max_useful_context": 400000,   // 300000 for weaker 1M models
+  //   "handoff_pct": 70,              // 30% reserve for noisy coding context
+  //   "hard_pct": 85,                 // big CoT + big reads burn fast per turn
+  //
+  // Net: soft handoff ~280K, forced ~340K, off the degradation cliff.
+  // ------------------------------------------------------------------------
+
+  // --- Other dials (full reference: ~/.sesh/README.md and -help) ---
+  // "task_depth": 3,            // subagent nesting cap
+  // "stuck_after": 3,           // driven iterations w/o a mutation before "stuck"
+  // "seed_ledger_entries": 10,  // chain-ledger entries carried in a handoff seed
+  // "recall_links": 50,         // chain links one recall call searches
+  // "diff_lines": 40,           // edit/write diff lines fed back (-1 disables)
+  // "skill_note_off": false,    // true reclaims tokens on strong-only setups
+  // "brief_provider": "",       // write handoff briefs with another profile...
+  // "brief_model": ""           // ...or another model (e.g. a cheap local one)
+}
