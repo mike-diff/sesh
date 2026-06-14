@@ -71,6 +71,20 @@ func TestReloadCmd(t *testing.T) {
 	}
 }
 
+// TestUpdateExecArgs: the post-update re-exec resumes this exact session and
+// carries the safety flags. Breaker: stop appending -ask/-unsafe-paths and a
+// reload silently drops the session's safety posture.
+func TestUpdateExecArgs(t *testing.T) {
+	r := newTestRepl(t) // newTestRepl sets sess.ID == "test"
+	if got := strings.Join(r.updateExecArgs("/usr/bin/sesh"), " "); got != "/usr/bin/sesh -resume test" {
+		t.Fatalf("plain reload args: %q", got)
+	}
+	r.ask, r.unsafePaths = true, true
+	if got := strings.Join(r.updateExecArgs("/usr/bin/sesh"), " "); got != "/usr/bin/sesh -resume test -ask -unsafe-paths" {
+		t.Fatalf("safety flags must carry across reload: %q", got)
+	}
+}
+
 // TestSettingsCmd: /settings is a looping picker: a selection toggles the
 // setting and the menu reopens until cancelled. Breakers: drop the toggle and
 // showThink never flips; drop the loop and the second pick in one invocation
