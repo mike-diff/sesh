@@ -370,6 +370,10 @@ func Main() {
 
 	cwd, _ := os.Getwd()
 	r.banner(cwd, *ask && !*autoYes, len(history), buildErr)
+	if msg := updatedNotice(os.Getenv("SESH_UPDATED_FROM"), commit); msg != "" {
+		emit("%s  %s%s\n\n", dim, msg, reset)
+		os.Unsetenv("SESH_UPDATED_FROM") // shown once; do not leak to subprocesses
+	}
 	r.pushStatus()
 
 	// Ctrl-C cancels the running turn, not sesh; pressed twice within

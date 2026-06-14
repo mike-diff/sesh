@@ -85,6 +85,21 @@ func TestUpdateExecArgs(t *testing.T) {
 	}
 }
 
+// TestUpdatedNotice: a post-update reload announces the new build and the one it
+// replaced, and stays silent otherwise. Breaker: always returning a line makes
+// every normal startup falsely claim an update.
+func TestUpdatedNotice(t *testing.T) {
+	if got := updatedNotice("", "newsha"); got != "" {
+		t.Fatalf("a normal start must not claim an update: %q", got)
+	}
+	if got := updatedNotice("same", "same"); got != "" {
+		t.Fatalf("no change must be silent: %q", got)
+	}
+	if got := updatedNotice("oldsha", "newsha"); got != "updated to newsha (was oldsha)" {
+		t.Fatalf("update notice wrong: %q", got)
+	}
+}
+
 // TestSettingsCmd: /settings is a looping picker: a selection toggles the
 // setting and the menu reopens until cancelled. Breakers: drop the toggle and
 // showThink never flips; drop the loop and the second pick in one invocation
