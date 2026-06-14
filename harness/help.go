@@ -47,6 +47,7 @@ FLAGS
 SESSION COMMANDS (interactive; tab completes)
   /provider [add|remove|name]  pick, add (wizard), remove, or switch providers
   /model [id|#|substring]      pick or switch models; window retunes if published
+  /reload                      re-fetch the model list from the active provider
   /context [tokens]            show or set the context window (persists, enables handoff)
   /handoff                     hand off to a fresh chained session now
   /chain                       show this conversation's handoff chain and ledger

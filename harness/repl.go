@@ -178,7 +178,7 @@ func (r *repl) completions(line string) []string {
 			}
 		}
 	case strings.HasPrefix(line, "/"):
-		for _, c := range []string{"/provider ", "/model ", "/chain", "/compact", "/context ", "/handoff", "/settings", "/help", "/exit", "/quit"} {
+		for _, c := range []string{"/provider ", "/model ", "/reload", "/chain", "/compact", "/context ", "/handoff", "/settings", "/help", "/exit", "/quit"} {
 			if strings.HasPrefix(c, line) {
 				out = append(out, c)
 			}
@@ -204,6 +204,8 @@ func (r *repl) command(line string) (handled, quit bool) {
 		r.providerCmd(arg("/provider"))
 	case line == "/model" || strings.HasPrefix(line, "/model "):
 		r.modelCmd(arg("/model"))
+	case line == "/reload":
+		r.reloadCmd()
 	case line == "/context" || strings.HasPrefix(line, "/context "):
 		r.contextCmd(arg("/context"))
 	case line == "/settings":
@@ -299,6 +301,7 @@ func (r *repl) helpCmd() {
   /provider <name>       switch provider, same conversation
   /model                 pick a model (arrows + enter)
   /model <id|#|substr>   switch model; the choice sticks to the provider
+  /reload                re-fetch the model list from the active provider
   /context [tokens]      show or set the model's context window; setting it
                          persists to the profile and enables automatic handoff
   /handoff               continue in a fresh session: brief + ledger + recent
@@ -388,6 +391,22 @@ func (r *repl) applyProvider(name string, prof Profile, key string) bool {
 	r.sess.save()
 	r.pushStatus()
 	return true
+}
+
+// reloadCmd re-runs model discovery against the active provider, so the
+// /model list picks up models added to or removed from the endpoint since
+// startup. Discovery is otherwise refreshed only when the provider changes.
+func (r *repl) reloadCmd() {
+	if r.p == nil {
+		emit("%s  no active provider; run /provider add%s\n\n", dim, reset)
+		return
+	}
+	r.models, r.modelCtx = discoverModels(r.p)
+	if len(r.models) == 0 {
+		emit("%s  no models listed (this endpoint has no models route, or needs a key: /provider add to re-key)%s\n\n", dim, reset)
+		return
+	}
+	emit("%s  reloaded %d models; /model to list%s\n\n", dim, len(r.models), reset)
 }
 
 // providerCmd handles /provider and its subcommands: list, add, remove, switch.

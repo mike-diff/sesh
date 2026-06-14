@@ -26,6 +26,21 @@ func (f fakeChat) Chat(_ context.Context, _ string, _ []agent.Turn, _ []agent.To
 	return agent.Reply{Text: f.text}, nil
 }
 
+// fakeLister is a Provider that also answers model discovery, for testing
+// /reload.
+type fakeLister struct {
+	fakeChat
+	models []string
+}
+
+func (f fakeLister) ListModelInfos(_ context.Context) ([]provider.ModelInfo, error) {
+	infos := make([]provider.ModelInfo, len(f.models))
+	for i, m := range f.models {
+		infos[i] = provider.ModelInfo{ID: m}
+	}
+	return infos, nil
+}
+
 // newTestRepl builds a repl wired to an isolated HOME and an endpoint that
 // fails fast (nothing listens on the URL), so commands exercise their state
 // transitions without a network or a terminal.
@@ -38,6 +53,21 @@ func newTestRepl(t *testing.T) *repl {
 		creds: map[string]string{},
 		sess:  &Session{ID: "test"},
 		con:   &plainConsole{in: bufio.NewReader(strings.NewReader(""))},
+	}
+}
+
+// TestReloadCmd: /reload re-runs discovery against the live
+// provider and replaces the cached model list. Breaker: drop the discoverModels
+// reassignment in reloadCmd and the stale list survives the call.
+func TestReloadCmd(t *testing.T) {
+	r := newTestRepl(t)
+	r.models = []string{"stale"}
+	r.p = fakeLister{models: []string{"alpha", "beta", "gamma"}}
+	if h, _ := r.command("/reload"); !h {
+		t.Fatal("/reload must be handled as a command")
+	}
+	if got := strings.Join(r.models, ","); got != "alpha,beta,gamma" {
+		t.Fatalf("model list not refreshed from the provider: %q", got)
 	}
 }
 
