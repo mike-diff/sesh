@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -230,5 +231,22 @@ func TestListModelInfos(t *testing.T) {
 	models, err := OpenAI{BaseURL: srv.URL, Model: "x"}.ListModels(context.Background())
 	if err != nil || len(models) != 4 || models[0] != "gateway" {
 		t.Fatalf("ListModels must keep returning sorted ids: %v err=%v", models, err)
+	}
+}
+
+// TestSSECancel: a cancelled context stops the stream at once instead of
+// draining buffered events. Breaker: drop the ctx check in sse and every
+// buffered "data:" line is still delivered after the turn is cancelled.
+func TestSSECancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the turn is already cancelled when sse starts reading
+	body := strings.NewReader("data: a\n\ndata: b\n\ndata: c\n\n")
+	delivered := 0
+	err := sse(ctx, body, func([]byte) error { delivered++; return nil })
+	if delivered != 0 {
+		t.Fatalf("a cancelled stream must deliver no buffered events, delivered %d", delivered)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("sse must report the cancellation, got %v", err)
 	}
 }

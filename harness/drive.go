@@ -165,10 +165,19 @@ func drive(r *repl, cfg driveConfig, firstTurns []agent.Turn) int {
 	iterTurns := firstTurns
 	stuck := 0
 	for iter := 1; ; iter++ {
-		v, jUsed, jerr := judgeGoal(context.Background(), r.p, cfg.request, renderTranscript(iterTurns, 300))
+		// The judge runs under the same cancellable context as the worker, so
+		// Ctrl-C pauses the drive during the judge phase too (not just during a
+		// streamed worker iteration).
+		jctx, jdone := turnCtx()
+		v, jUsed, jerr := judgeGoal(jctx, r.p, cfg.request, renderTranscript(iterTurns, 300))
+		jdone()
 		r.accountAux(jUsed) // the judge is real spend; count it, leave the gauge
 		switch {
 		case jerr != nil:
+			if isCanceled(jerr) {
+				say("== paused; your next message steers")
+				return driveInterrupted
+			}
 			// No verdict means no mandate to keep spending: stop quietly.
 			say("== judge unavailable (%s); returning to you", compact(jerr.Error()))
 			return driveBlocked

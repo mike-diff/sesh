@@ -126,10 +126,17 @@ func post(ctx context.Context, url string, headers map[string]string, body any) 
 }
 
 // sse reads a Server-Sent Events body and hands each data payload to handle.
-func sse(body io.Reader, handle func(data []byte) error) error {
+func sse(ctx context.Context, body io.Reader, handle func(data []byte) error) error {
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for sc.Scan() {
+		// Stop the instant the turn is cancelled (Ctrl-C). The scanner can hold
+		// megabytes of already-received events; without this check they keep
+		// rendering after the request itself is aborted, so the turn looks
+		// uncancellable.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		line := sc.Text()
 		if !strings.HasPrefix(line, "data:") {
 			continue // event: lines, comments, keep-alives
@@ -142,7 +149,10 @@ func sse(body io.Reader, handle func(data []byte) error) error {
 			return err
 		}
 	}
-	return sc.Err()
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	return ctx.Err()
 }
 
 // callAccum gathers streamed tool-call fragments, shared by both protocols.
@@ -298,7 +308,7 @@ func (p Anthropic) Chat(ctx context.Context, system string, history []agent.Turn
 	var text strings.Builder
 	var reply agent.Reply
 
-	err = sse(resp.Body, func(data []byte) error {
+	err = sse(ctx, resp.Body, func(data []byte) error {
 		var ev struct {
 			Type         string `json:"type"`
 			Index        int    `json:"index"`
@@ -438,7 +448,7 @@ func (p OpenAI) Chat(ctx context.Context, system string, history []agent.Turn, t
 	var text strings.Builder
 	var reply agent.Reply
 
-	err = sse(resp.Body, func(data []byte) error {
+	err = sse(ctx, resp.Body, func(data []byte) error {
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
