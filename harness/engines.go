@@ -1,6 +1,6 @@
 package harness
 
-import "sesh/agent"
+import "github.com/mike-diff/sesh/agent"
 
 // engineTools assembles the official engines (skill, mcp). Each joins the
 // toolset only when its user-space content exists: no skills installed and no

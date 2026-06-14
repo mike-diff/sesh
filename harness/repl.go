@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"sesh/agent"
-	"sesh/provider"
+	"github.com/mike-diff/sesh/agent"
+	"github.com/mike-diff/sesh/provider"
 )
 
 // repl is the live state of an interactive session: the active brain and its

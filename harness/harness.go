@@ -22,8 +22,8 @@ import (
 	"sync"
 	"time"
 
-	"sesh/agent"
-	"sesh/provider"
+	"github.com/mike-diff/sesh/agent"
+	"github.com/mike-diff/sesh/provider"
 )
 
 const bashTimeout = 60 * time.Second

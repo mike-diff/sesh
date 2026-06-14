@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"sesh/agent"
+	"github.com/mike-diff/sesh/agent"
 )
 
 // TestSystemPromptChain pins the steering resolution: the guide-structured

@@ -19,7 +19,7 @@ jobs:
           for target in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
             GOOS=${target%-*} GOARCH=${target#*-} CGO_ENABLED=0 \
               go build -trimpath \
-              -ldflags "-s -w -X sesh/harness.commit=${commit}" \
+              -ldflags "-s -w -X github.com/mike-diff/sesh/harness.commit=${commit}" \
               -o "dist/sesh-$target" ./cmd/sesh
           done
           (cd dist && sha256sum sesh-* > SHA256SUMS)

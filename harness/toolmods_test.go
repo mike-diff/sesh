@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"sesh/agent"
+	"github.com/mike-diff/sesh/agent"
 )
 
 // writeToolMod drops an executable into the temp HOME's tools dir.

@@ -41,9 +41,9 @@ import (
 	"testing"
 	"time"
 
-	"sesh/agent"
-	"sesh/harness"
-	"sesh/provider"
+	"github.com/mike-diff/sesh/agent"
+	"github.com/mike-diff/sesh/harness"
+	"github.com/mike-diff/sesh/provider"
 )
 
 // ---------------------------------------------------------------------------

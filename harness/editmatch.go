@@ -26,7 +26,7 @@ import (
 	"os"
 	"strings"
 
-	"sesh/agent"
+	"github.com/mike-diff/sesh/agent"
 )
 
 // lineEnding captures a file's original encoding so a normalized edit can be

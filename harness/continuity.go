@@ -28,7 +28,7 @@ import (
 	"strings"
 	"time"
 
-	"sesh/agent"
+	"github.com/mike-diff/sesh/agent"
 )
 
 // approxTokens is the usual chars/4 estimate: good enough for budgeting the

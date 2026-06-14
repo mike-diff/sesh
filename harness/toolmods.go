@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	"sesh/agent"
+	"github.com/mike-diff/sesh/agent"
 )
 
 func toolModsDir() string { return filepath.Join(os.Getenv("HOME"), ".sesh", "tools") }

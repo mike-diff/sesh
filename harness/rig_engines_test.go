@@ -28,7 +28,7 @@ import (
 	"testing"
 	"time"
 
-	"sesh/agent"
+	"github.com/mike-diff/sesh/agent"
 )
 
 // recordedCall is one tool invocation observed during a run.

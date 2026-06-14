@@ -18,7 +18,7 @@ import (
 )
 
 // commit is the build's git revision, stamped at release build
-// (-ldflags "-X sesh/harness.commit=$(git rev-parse --short HEAD)"); a
+// (-ldflags "-X github.com/mike-diff/sesh/harness.commit=$(git rev-parse --short HEAD)"); a
 // from-source build says "source". sesh is a single rolling codebase: there
 // are no version numbers, only the commit a binary was built from, so update
 // is content-based (compare checksums), never a tag comparison.

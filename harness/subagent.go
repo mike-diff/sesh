@@ -15,7 +15,7 @@ import (
 	"os"
 	"strings"
 
-	"sesh/agent"
+	"github.com/mike-diff/sesh/agent"
 )
 
 const taskDescription = "Delegate a self-contained, read-only investigation to a subagent with its own fresh context window. " +

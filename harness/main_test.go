@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"sesh/agent"
+	"github.com/mike-diff/sesh/agent"
 )
 
 // yes approves one mutating-tool gate prompt.

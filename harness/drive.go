@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"sesh/agent"
+	"github.com/mike-diff/sesh/agent"
 )
 
 // drive outcomes. Print mode maps them to exit codes; interactive maps them

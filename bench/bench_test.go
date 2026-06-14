@@ -152,7 +152,7 @@ func sandboxProviders(t *testing.T, homeDir string, ctxTokens int) string {
 func buildSesh(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "sesh")
-	cmd := exec.Command("go", "build", "-o", bin, "sesh/cmd/sesh")
+	cmd := exec.Command("go", "build", "-o", bin, "./cmd/sesh")
 	cmd.Dir = repoRoot(t)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build sesh: %v\n%s", err, out)
