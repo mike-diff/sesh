@@ -105,14 +105,14 @@ func replaceFile(dst string, content []byte) error {
 	return os.Rename(tmp, dst)
 }
 
-// updateCmd replaces the running binary with the latest released one for this
-// OS and architecture. It is content-based, not version-based: it compares
-// the published checksum against the running binary's own, downloads only on
-// a mismatch, and verifies the download before swapping it in.
-func updateCmd() int {
+// runUpdate swaps the running binary for the latest released one when their
+// checksums differ, and reports whether it changed anything. Content-based, not
+// version-based: it compares the published checksum against the running binary's
+// own, downloads only on a mismatch, and verifies the download before the swap.
+// Shared by the -update flag (updateCmd) and the in-session /update.
+func runUpdate() (changed bool, err error) {
 	if commit == "source" {
-		fmt.Fprintln(os.Stderr, "this sesh was built from source; update with: git pull && go build -o bin/sesh ./cmd/sesh")
-		return 1
+		return false, fmt.Errorf("this sesh was built from source; update with: git pull && go build -o bin/sesh ./cmd/sesh")
 	}
 	base := releaseBase
 	if v := os.Getenv("SESH_UPDATE_URL"); v != "" {
@@ -121,36 +121,44 @@ func updateCmd() int {
 	want := "sesh-" + runtime.GOOS + "-" + runtime.GOARCH
 	sums, err := httpGet(base + "/SHA256SUMS")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "check latest release: %v\n", err)
-		return 1
+		return false, fmt.Errorf("check latest release: %w", err)
 	}
 	expected, err := sumFor(string(sums), want)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "latest release has no %s: %v\n", want, err)
-		return 1
+		return false, fmt.Errorf("latest release has no %s: %w", want, err)
 	}
 	self, err := selfPath()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "cannot locate the running binary: %v\n", err)
-		return 1
+		return false, fmt.Errorf("cannot locate the running binary: %w", err)
 	}
 	if cur, err := os.ReadFile(self); err == nil && sha256hex(cur) == expected {
-		fmt.Println("already up to date")
-		return 0
+		return false, nil // already up to date
 	}
 	bin, err := httpGet(base + "/" + want)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "download %s: %v\n", want, err)
-		return 1
+		return false, fmt.Errorf("download %s: %w", want, err)
 	}
 	if sha256hex(bin) != expected {
-		fmt.Fprintf(os.Stderr, "refusing to update: checksum mismatch for %s (corrupt or tampered download)\n", want)
-		return 1
+		return false, fmt.Errorf("refusing to update: checksum mismatch for %s (corrupt or tampered download)", want)
 	}
 	if err := replaceFile(self, bin); err != nil {
-		fmt.Fprintf(os.Stderr, "replace %s: %v\n", self, err)
+		return false, fmt.Errorf("replace %s: %w", self, err)
+	}
+	return true, nil
+}
+
+// updateCmd is the -update flag: run the update and report the outcome.
+func updateCmd() int {
+	changed, err := runUpdate()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	if !changed {
+		fmt.Println("already up to date")
+		return 0
+	}
+	self, _ := selfPath()
 	fmt.Printf("updated to the latest build (%s)\n", self)
 	return 0
 }

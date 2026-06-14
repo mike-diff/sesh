@@ -308,6 +308,7 @@ func Main() {
 		p: p, protocol: spec.protocol, url: spec.url, model: spec.model,
 		key: spec.key, keyEnv: spec.keyEnv, current: spec.name,
 		ctxLimit: spec.ctxLimit, showThink: true,
+		ask: *ask && !*autoYes, unsafePaths: *unsafePaths,
 		pcfg: pcfg, creds: creds, sess: sess, history: history,
 		system: system, con: con,
 	}

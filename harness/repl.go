@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/mike-diff/sesh/agent"
@@ -40,10 +41,12 @@ type repl struct {
 	system   string
 	con      console
 	// rendering and context policy
-	showThink  bool // render reasoning deltas (they are display-only either way)
-	ctxLimit   int  // model context window in tokens; 0 = unknown
-	assumedCtx bool // ctxLimit is the fallback guess, not declared or discovered
-	switched   bool // brain changed mid-conversation: noted in the identity block
+	showThink   bool // render reasoning deltas (they are display-only either way)
+	ctxLimit    int  // model context window in tokens; 0 = unknown
+	assumedCtx  bool // ctxLimit is the fallback guess, not declared or discovered
+	switched    bool // brain changed mid-conversation: noted in the identity block
+	ask         bool // -ask is active: carried across a /update reload
+	unsafePaths bool // -unsafe-paths is active: carried across a /update reload
 	// running totals for the status line
 	turns                   int
 	totIn, totOut, totCache int
@@ -178,7 +181,7 @@ func (r *repl) completions(line string) []string {
 			}
 		}
 	case strings.HasPrefix(line, "/"):
-		for _, c := range []string{"/provider ", "/model ", "/reload", "/chain", "/compact", "/context ", "/handoff", "/settings", "/help", "/exit", "/quit"} {
+		for _, c := range []string{"/provider ", "/model ", "/reload", "/update", "/chain", "/compact", "/context ", "/handoff", "/settings", "/help", "/exit", "/quit"} {
 			if strings.HasPrefix(c, line) {
 				out = append(out, c)
 			}
@@ -206,6 +209,8 @@ func (r *repl) command(line string) (handled, quit bool) {
 		r.modelCmd(arg("/model"))
 	case line == "/reload":
 		r.reloadCmd()
+	case line == "/update":
+		r.updateCmd()
 	case line == "/context" || strings.HasPrefix(line, "/context "):
 		r.contextCmd(arg("/context"))
 	case line == "/settings":
@@ -302,6 +307,7 @@ func (r *repl) helpCmd() {
   /model                 pick a model (arrows + enter)
   /model <id|#|substr>   switch model; the choice sticks to the provider
   /reload                re-fetch the model list from the active provider
+  /update                self-update, then reload into this same session
   /context [tokens]      show or set the model's context window; setting it
                          persists to the profile and enables automatic handoff
   /handoff               continue in a fresh session: brief + ledger + recent
@@ -407,6 +413,53 @@ func (r *repl) reloadCmd() {
 		return
 	}
 	emit("%s  reloaded %d models; /model to list%s\n\n", dim, len(r.models), reset)
+}
+
+// updateExecArgs builds the argv for the post-update re-exec: resume this exact
+// session, and carry the safety flags forward so the reload cannot quietly
+// change the posture. The brain, history, and cwd are restored from the
+// resumed session itself, so they need not be re-passed.
+func (r *repl) updateExecArgs(self string) []string {
+	args := []string{self, "-resume", r.sess.ID}
+	if r.ask {
+		args = append(args, "-ask")
+	}
+	if r.unsafePaths {
+		args = append(args, "-unsafe-paths")
+	}
+	return args
+}
+
+// updateCmd self-updates and, if the binary changed, re-execs the new one
+// resumed on this session. The conversation is already on disk (autosaved), so
+// the reload is seamless. A source build or a failed update leaves the session
+// running untouched.
+func (r *repl) updateCmd() {
+	emit("%s  checking for an update...%s\n", dim, reset)
+	changed, err := runUpdate()
+	if err != nil {
+		emit("%s  %v%s\n\n", red, err, reset)
+		return
+	}
+	if !changed {
+		emit("%s  already up to date%s\n\n", dim, reset)
+		return
+	}
+	self, err := selfPath()
+	if err != nil {
+		emit("%s  updated, but cannot locate the binary to reload (%v); restart sesh to use it%s\n\n", red, err, reset)
+		return
+	}
+	r.sess.save() // autosaved already; flush once more before handing off
+	args := r.updateExecArgs(self)
+	emit("%s  updated; reloading into this session...%s\n", dim, reset)
+	releaseLock(r.sess.ID) // execve keeps our PID, so the successor must be free to re-lock
+	r.con.Close()          // restore the terminal before the new image takes it
+	if err := syscall.Exec(self, args, os.Environ()); err != nil {
+		// Exec returns only on failure; reclaim the lock so the session is not orphaned.
+		acquireLock(r.sess.ID)
+		fmt.Fprintf(os.Stderr, "reload failed (%v); the update is installed, restart sesh to use it\n", err)
+	}
 }
 
 // providerCmd handles /provider and its subcommands: list, add, remove, switch.
