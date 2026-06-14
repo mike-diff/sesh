@@ -71,6 +71,25 @@ func TestReloadCmd(t *testing.T) {
 	}
 }
 
+// TestSlashCommandCompletionCoversDispatch: every dispatched command is also
+// tab-completable, because both derive from slashCommands. Breaker: hardcode the
+// completion list and let it drift, and a command goes missing from completion.
+func TestSlashCommandCompletionCoversDispatch(t *testing.T) {
+	r := newTestRepl(t)
+	completed := map[string]bool{}
+	for _, c := range r.completions("/") {
+		completed[strings.TrimSpace(c)] = true
+	}
+	for _, c := range slashCommands {
+		if !completed[c.name] {
+			t.Fatalf("%s is dispatched but not tab-completed", c.name)
+		}
+	}
+	if got := r.completions("/up"); len(got) != 1 || strings.TrimSpace(got[0]) != "/update" {
+		t.Fatalf("/up should complete to /update, got %v", got)
+	}
+}
+
 // TestUpdateExecArgs: the post-update re-exec resumes this exact session and
 // carries the safety flags. Breaker: stop appending -ask/-unsafe-paths and a
 // reload silently drops the session's safety posture.

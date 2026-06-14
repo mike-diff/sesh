@@ -181,46 +181,61 @@ func (r *repl) completions(line string) []string {
 			}
 		}
 	case strings.HasPrefix(line, "/"):
-		for _, c := range []string{"/provider ", "/model ", "/reload", "/update", "/chain", "/compact", "/context ", "/handoff", "/settings", "/help", "/exit", "/quit"} {
-			if strings.HasPrefix(c, line) {
-				out = append(out, c)
+		for _, c := range slashCommands {
+			name := c.name
+			if c.arg {
+				name += " " // a space invites the argument
+			}
+			if strings.HasPrefix(name, line) {
+				out = append(out, name)
 			}
 		}
 	}
 	return out
 }
 
+// slashCommand is one in-session command. The table below is the single source
+// of truth: command() dispatches from it and completions() lists from it, so a
+// new command is tab-completable the moment it is added here, no second list to
+// keep in sync.
+type slashCommand struct {
+	name string // e.g. "/model"
+	arg  bool   // accepts a "/name <arg>" form (and tab-completes with a space)
+	quit bool   // ends the session
+	run  func(r *repl, arg string)
+}
+
+var slashCommands = []slashCommand{
+	{name: "/provider", arg: true, run: func(r *repl, a string) { r.providerCmd(a) }},
+	{name: "/model", arg: true, run: func(r *repl, a string) { r.modelCmd(a) }},
+	{name: "/reload", run: func(r *repl, _ string) { r.reloadCmd() }},
+	{name: "/update", run: func(r *repl, _ string) { r.updateCmd() }},
+	{name: "/context", arg: true, run: func(r *repl, a string) { r.contextCmd(a) }},
+	{name: "/handoff", run: func(r *repl, _ string) { r.handoff() }},
+	{name: "/chain", run: func(r *repl, _ string) { r.chainCmd() }},
+	{name: "/compact", run: func(r *repl, _ string) { r.compactCmd() }},
+	{name: "/settings", run: func(r *repl, _ string) { r.settingsCmd() }},
+	{name: "/help", run: func(r *repl, _ string) { r.helpCmd() }},
+	{name: "/exit", quit: true},
+	{name: "/quit", quit: true},
+}
+
 // command dispatches one input line. handled=false means the line is a chat
 // message for the model; quit=true means the session should end.
 func (r *repl) command(line string) (handled, quit bool) {
-	arg := func(prefix string) string { return strings.TrimSpace(strings.TrimPrefix(line, prefix)) }
-	switch {
-	case line == "exit" || line == "quit" || line == "/exit" || line == "/quit":
-		return true, true
-	case line == "/compact":
-		r.compactCmd()
-	case line == "/handoff":
-		r.handoff()
-	case line == "/chain":
-		r.chainCmd()
-	case line == "/provider" || strings.HasPrefix(line, "/provider "):
-		r.providerCmd(arg("/provider"))
-	case line == "/model" || strings.HasPrefix(line, "/model "):
-		r.modelCmd(arg("/model"))
-	case line == "/reload":
-		r.reloadCmd()
-	case line == "/update":
-		r.updateCmd()
-	case line == "/context" || strings.HasPrefix(line, "/context "):
-		r.contextCmd(arg("/context"))
-	case line == "/settings":
-		r.settingsCmd()
-	case line == "/help":
-		r.helpCmd()
-	default:
-		return false, false
+	if line == "exit" || line == "quit" {
+		return true, true // bare words, no slash
 	}
-	return true, false
+	for _, c := range slashCommands {
+		if line == c.name || (c.arg && strings.HasPrefix(line, c.name+" ")) {
+			if c.quit {
+				return true, true
+			}
+			c.run(r, strings.TrimSpace(strings.TrimPrefix(line, c.name)))
+			return true, false
+		}
+	}
+	return false, false
 }
 
 // contextCmd shows or sets the context window, the one number the whole
