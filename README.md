@@ -24,6 +24,12 @@ macOS and Linux (amd64 and arm64):
 curl -fsSL https://raw.githubusercontent.com/mike-diff/sesh/main/install.sh | sh
 ```
 
+Or with Go 1.22+:
+
+```sh
+go install github.com/mike-diff/sesh/cmd/sesh@latest
+```
+
 Or from a branch:
 
 ```sh

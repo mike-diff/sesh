@@ -4,7 +4,7 @@ package harness
 // library loop with the real built-in toolset. builtinTools is unexported (it
 // is product policy, not library API), so this wrapper is the rig's way in.
 
-import "sesh/agent"
+import "github.com/mike-diff/sesh/agent"
 
 // BenchTools returns the built-in tools for the editbench rig. unsafePaths
 // mirrors the -unsafe-paths flag (the rig passes false: its fixtures live in

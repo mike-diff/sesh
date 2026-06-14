@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"sesh/agent"
+	"github.com/mike-diff/sesh/agent"
 )
 
 func turnsOf(pairs ...string) []agent.Turn {

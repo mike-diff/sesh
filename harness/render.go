@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"sesh/agent"
+	"github.com/mike-diff/sesh/agent"
 )
 
 // ---------------------------------------------------------------------------

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"sesh/agent"
-	"sesh/provider"
+	"github.com/mike-diff/sesh/agent"
+	"github.com/mike-diff/sesh/provider"
 )
 
 // fakeChat is a Provider that returns one fixed reply (or error), for testing

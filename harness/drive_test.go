@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"sesh/agent"
+	"github.com/mike-diff/sesh/agent"
 )
 
 // seqChat runs each call through the next scripted function, so a test can

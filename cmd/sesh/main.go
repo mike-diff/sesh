@@ -3,6 +3,6 @@
 // so `go build ./cmd/sesh` has a main.
 package main
 
-import "sesh/harness"
+import "github.com/mike-diff/sesh/harness"
 
 func main() { harness.Main() }

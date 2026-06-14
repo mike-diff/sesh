@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"sesh/agent"
+	"github.com/mike-diff/sesh/agent"
 )
 
 // script replays a fixed sequence of replies, one per Chat call.

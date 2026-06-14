@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"sesh/agent"
+	"github.com/mike-diff/sesh/agent"
 )
 
 // fact is one planted piece of session knowledge and the probe that checks it

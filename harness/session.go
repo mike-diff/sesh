@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"sesh/agent"
+	"github.com/mike-diff/sesh/agent"
 )
 
 type Session struct {

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"sesh/agent"
+	"github.com/mike-diff/sesh/agent"
 )
 
 // TestMatchLadderTrailingSpace: a needle quoted without the file's trailing
