@@ -1,0 +1,5 @@
+# sesh project-local config the agent may create while working the fixture
+.sesh/
+
+# the compiled fixture binary (a `go build ./...` artifact, never committed)
+/ticketsvc

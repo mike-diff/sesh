@@ -1,0 +1,35 @@
+name: release
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: build
+        run: |
+          mkdir -p dist
+          commit=$(git rev-parse --short HEAD)
+          for target in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
+            GOOS=${target%-*} GOARCH=${target#*-} CGO_ENABLED=0 \
+              go build -trimpath \
+              -ldflags "-s -w -X sesh/harness.commit=${commit}" \
+              -o "dist/sesh-$target" ./cmd/sesh
+          done
+          (cd dist && sha256sum sesh-* > SHA256SUMS)
+      - name: publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Single rolling codebase: no version tags. Replace one fixed
+          # release so releases/latest/download/<asset> always serves HEAD.
+          gh release delete rolling --cleanup-tag --yes || true
+          gh release create rolling dist/* \
+            --target "$GITHUB_SHA" --title "rolling" \
+            --notes "Rolling build from ${GITHUB_SHA}"

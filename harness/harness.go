@@ -1,0 +1,478 @@
+// sesh: a minimal coding agent with infinite, judged sessions. Stdlib only.
+//
+// This is the product layer (pi's coding-agent). It owns everything the core
+// refuses to: the tools, the oversight gate, rendering, output modes, the
+// steering chain, and sessions. The loop itself lives in package agent.
+//
+//	sesh                               # interactive; set up brains with /provider add
+//	sesh -provider local               # start on a named provider
+//	sesh -p "list the go files"        # print mode (one shot, read-only; add -yes to allow changes)
+//	sesh -continue                     # resume the latest session
+//	sesh -fork 20260101-120000         # branch from a session
+//	sesh -protocol openai -url http://localhost:8080/v1 -model some-model   # ad hoc, no profile
+package harness
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"os/signal"
+	"strings"
+	"sync"
+	"time"
+
+	"sesh/agent"
+	"sesh/provider"
+)
+
+const bashTimeout = 60 * time.Second
+
+const (
+	dim    = "\033[2m"
+	yellow = "\033[33m"
+	red    = "\033[31m"
+	green  = "\033[32m"
+	reset  = "\033[0m"
+)
+
+func fail(err error) {
+	fmt.Fprintln(os.Stderr, err)
+	os.Exit(1)
+}
+
+// Main is the whole product: flags, wiring, modes, and the interactive
+// loop. cmd/sesh calls it and nothing else.
+func Main() {
+	protocol := flag.String("protocol", "anthropic", "wire protocol: anthropic or openai")
+	url := flag.String("url", "", "base URL (default: the protocol's public API)")
+	model := flag.String("model", "", "model id (overrides the provider's default)")
+	providerName := flag.String("provider", "", "named provider profile from providers.json")
+	resume := flag.String("resume", "", "resume a session by id")
+	fork := flag.String("fork", "", "branch a new session from an existing one by id")
+	cont := flag.Bool("continue", false, "resume the most recent session")
+	list := flag.Bool("list", false, "list saved sessions and exit")
+	autoYes := flag.Bool("yes", false, "allow mutation in print mode; interactively, silences -ask")
+	ask := flag.Bool("ask", false, "prompt for approval before each write/edit/bash call")
+	unsafePaths := flag.Bool("unsafe-paths", false, "allow file tools to touch paths outside the working directory")
+	printMode := flag.String("p", "", "print mode: run one prompt, print the final reply, exit (read-only unless -yes)")
+	maxTools := flag.Int("max-tools", 0, "cap tool calls per iteration, subagents included (0 = unlimited)")
+	maxIters := flag.Int("max-iters", 25, "stop driving a request after this many iterations (1 = single-turn, no persistence)")
+	doctor := flag.Bool("doctor", false, "check the configuration: providers, keys, endpoints, statusline")
+	install := flag.Bool("install", false, "install this binary to ~/.local/bin and scaffold ~/.sesh")
+	update := flag.Bool("update", false, "replace the installed binary with the latest release")
+	showVersion := flag.Bool("version", false, "print the build commit and exit (source = built locally)")
+	flag.Usage = func() { fmt.Fprint(os.Stderr, usageText()) }
+	flag.Parse()
+	if *showVersion {
+		fmt.Println(commit)
+		return
+	}
+	if *install {
+		os.Exit(installCmd())
+	}
+	if *update {
+		os.Exit(updateCmd())
+	}
+	scaffoldHome()      // first run populates ~/.sesh; later runs fill gaps only
+	tune = loadTuning() // dials resolve before anything reads them
+
+	if *list {
+		printSessions()
+		return
+	}
+	if *doctor {
+		os.Exit(runDoctor())
+	}
+
+	explicit := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+
+	// Load or start a session.
+	var sess *Session
+	var err error
+	switch {
+	case *resume != "":
+		if sess, err = loadSession(*resume); err != nil {
+			fail(err)
+		}
+		// A sealed session was handed off; its archived transcript is what
+		// descendants' recall reads, so it must never grow again. Resuming
+		// one lands on the live end of its chain instead.
+		if tip, hops := chainTip(sess); hops > 0 {
+			fmt.Fprintf(os.Stderr, "%snote: session %s was sealed by a handoff; resuming the chain tip %s (%d hop(s) later; use -fork %s to branch the archived state)%s\n",
+				yellow, sess.ID, tip.ID, hops, sess.ID, reset)
+			sess = tip
+		}
+	case *fork != "":
+		if sess, err = forkSession(*fork); err != nil {
+			fail(err)
+		}
+	case *cont:
+		cwd, _ := os.Getwd()
+		if sess, err = latestSession(cwd); err != nil {
+			fail(err)
+		}
+	default:
+		cwd, _ := os.Getwd()
+		sess = &Session{ID: newSessionID(), Cwd: cwd, Created: time.Now()}
+	}
+
+	// One live instance per session: claim it, or in -continue's case fall
+	// back to a fresh session, so running several sesh instances in one directory
+	// just works instead of silently clobbering a shared session file.
+	if lerr := acquireLock(sess.ID); lerr != nil {
+		if !*cont {
+			fail(lerr)
+		}
+		fmt.Fprintf(os.Stderr, "%snote: %v; starting a fresh session instead%s\n", yellow, lerr, reset)
+		cwd, _ := os.Getwd()
+		sess = &Session{ID: newSessionID(), Cwd: cwd, Created: time.Now()}
+		if lerr := acquireLock(sess.ID); lerr != nil {
+			fail(lerr)
+		}
+	}
+
+	// A session resumed outside its home directory still works (the tools
+	// confine to the CURRENT directory, and the system prompt is rebuilt for
+	// it), but the conversation's file references belong elsewhere; say so
+	// instead of letting the mismatch pass silently. Stderr, so print-mode
+	// stdout stays clean for pipes.
+	if *resume != "" && sess.Cwd != "" {
+		if cwd, _ := os.Getwd(); cwd != sess.Cwd {
+			fmt.Fprintf(os.Stderr, "%snote: session %s was recorded in %s; its file references belong there%s\n",
+				yellow, sess.ID, sess.Cwd, reset)
+		}
+	}
+
+	// Layer the provider settings: profile, then session, then flags. A fresh
+	// session adopts the brain you last used (this directory's latest session
+	// first, then the latest anywhere) instead of resetting to the config
+	// default; an explicit -provider, or resuming, overrides that.
+	pcfg := loadProviders()
+	creds := loadCredentials()
+	brain := sess
+	if len(sess.Turns) == 0 && !explicit["provider"] {
+		if prior := lastBrain(sess.Cwd); prior != nil {
+			brain = prior
+		}
+	}
+	spec, err := resolveSpec(selection{
+		provider: *providerName, protocol: *protocol, url: *url, model: *model,
+		explicit: explicit,
+	}, brain, pcfg, creds)
+	if err != nil {
+		fail(err) // a named-but-unknown -provider is fatal; a missing default is not
+	}
+
+	// Build the active provider. If it cannot be built yet (no providers
+	// configured, or a missing key), interactive mode still starts so the user
+	// can run /provider add. Print mode has nothing to do, so it fails below.
+	var p agent.Provider
+	var buildErr error
+	if buildErr = resolveDefaults(spec.protocol, &spec.url, &spec.model); buildErr == nil {
+		p, buildErr = buildProvider(spec.protocol, spec.url, spec.model, spec.key, spec.keyEnv)
+	}
+	if p != nil {
+		sess.Provider = spec.name
+		sess.Protocol, sess.URL, sess.Model = spec.protocol, spec.url, spec.model
+	}
+
+	tools := builtinTools(*unsafePaths)
+	// The engines (skill, mcp) join only when their user-space content exists:
+	// an empty mount costs zero tokens. They are built-ins, so they claim
+	// their names ahead of tool mods like every other built-in.
+	engTools, engNotes, engSysNote := engineTools()
+	tools = append(tools, engTools...)
+	// Tool mods join the toolset before either mode wires task and recall in;
+	// taken pre-claims every built-in name so a mod can never shadow one.
+	taken := map[string]bool{"task": true, "recall": true}
+	for _, t := range tools {
+		taken[t.Def.Name] = true
+	}
+	modTools, modNotes := loadToolMods(taken)
+	tools = append(tools, modTools...)
+	for _, n := range append(engNotes, modNotes...) {
+		fmt.Fprintf(os.Stderr, "%s%s%s\n", yellow, n, reset)
+	}
+	// Byte-stable per brain (keeps the prompt cache warm): the identity block
+	// only changes when the provider or model does, which busts the cache anyway.
+	// The engines note is byte-stable per session like the rest of the prompt.
+	system := systemPrompt() + engSysNote + identityBlock(spec.name, spec.model, spec.protocol, false)
+	history := sess.Turns
+
+	// Print mode: one turn, final reply to stdout, exit. Silent hooks.
+	// Read-only by default: no one is watching, so mutation needs explicit -yes.
+	// A run tied to a session gets the same context management as interactive
+	// (preflight, pressure handoff): scripted -p -continue loops are exactly
+	// the sessions that otherwise grow forever. Management notices go to
+	// stderr so piped stdout stays the reply alone.
+	if *printMode != "" {
+		if p == nil {
+			fail(buildErr)
+		}
+		tied := *resume != "" || *fork != "" || *cont
+		activeConsole = &plainConsole{out: os.Stderr}
+		r := &repl{
+			p: p, protocol: spec.protocol, url: spec.url, model: spec.model,
+			key: spec.key, keyEnv: spec.keyEnv, current: spec.name,
+			ctxLimit: capWindow(spec.ctxLimit),
+			sess:     sess, history: history, system: system, con: activeConsole,
+		}
+		if len(history) > 0 {
+			// Usage is unknown until the first call; estimate so preflight
+			// can act on a resumed session already near its limit.
+			r.ctxTokens = approxTokens(history) + len(system)/4
+		}
+		if r.ctxLimit == 0 { // same fallback as interactive: never fly blind
+			r.ctxLimit, r.assumedCtx = tune.AssumedContext, true
+		}
+		var mutMu sync.Mutex
+		mutations := 0
+		raw := printGate(*autoYes)
+		counted := func(c agent.ToolCall) error {
+			err := raw(c)
+			if err == nil && mutating[c.Name] {
+				mutMu.Lock()
+				mutations++
+				mutMu.Unlock()
+			}
+			return err
+		}
+		pg := budgetGate(*maxTools, counted) // first turn's budget; drive refreshes per iteration
+		sessOf := func() *Session { return r.sess }
+		tools = append(tools,
+			taskTool(func() agent.Provider { return r.p }, sessOf, 1, *unsafePaths, pg, nil),
+			recallTool(sessOf))
+		if r.preflight(*printMode) {
+			os.Exit(1) // the message can never fit; nothing was sent
+		}
+		mark := len(r.history)
+		r.history = append(r.history, agent.Turn{Role: "user", Text: *printMode})
+		out, spent, err := agent.Run(context.Background(), r.p, r.system, r.history, tools,
+			agent.Hooks{Gate: pg})
+		if err != nil {
+			if hint := keyHint(err, spec.name); hint != "" {
+				fmt.Fprintf(os.Stderr, "%s\n", strings.TrimSpace(hint))
+			}
+			fail(err)
+		}
+		r.history = out
+		if spent.LastInput > 0 {
+			r.ctxTokens = spent.LastInput
+		}
+		// One-shot runs only persist when the user tied them to a session;
+		// otherwise scripted -p calls would litter the session list.
+		if tied {
+			r.sess.Turns = out
+			r.sess.save()
+			r.managePressure() // a handoff here moves the lock with it
+		}
+		// Goal-driven persistence, same lifecycle as interactive: the request
+		// is the goal, and a judged not-done keeps the run working. Progress
+		// lines go to stderr; stdout stays the final reply alone.
+		code := drive(r, driveConfig{
+			request: *printMode, maxIters: *maxIters, maxTools: *maxTools, tools: tools,
+			hooks:     agent.Hooks{Gate: counted},
+			mutations: func() int { mutMu.Lock(); defer mutMu.Unlock(); return mutations },
+			say:       func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
+		}, out[mark:])
+		if !tied {
+			// drive iterations save as they go; untied one-shots must not
+			// leave session litter behind.
+			os.Remove(r.sess.path())
+		}
+		if final := lastText(r.history); final != "" {
+			fmt.Println(final) // the run's final reply, not replayed history
+		}
+		releaseLock(r.sess.ID)
+		switch code {
+		case driveStuck, driveMaxIters:
+			os.Exit(code)
+		}
+		return
+	}
+
+	// Interactive: the retry notice renders through the product, not the core.
+	provider.OnRetry = func(d time.Duration, err error) {
+		emit("%s  retrying in %s (%v)%s\n", dim, d, err, reset)
+	}
+
+	// The console is the input twin of the rendering hooks: the footer TUI on
+	// a real terminal, plain line input on a pipe. It must be restored on exit.
+	con := newConsole()
+	activeConsole = con // route all transcript output through the footer
+	defer con.Close()
+
+	r := &repl{
+		p: p, protocol: spec.protocol, url: spec.url, model: spec.model,
+		key: spec.key, keyEnv: spec.keyEnv, current: spec.name,
+		ctxLimit: spec.ctxLimit, showThink: true,
+		pcfg: pcfg, creds: creds, sess: sess, history: history,
+		system: system, con: con,
+	}
+	r.refreshSystem() // attach the identity block to the live brain
+	if len(history) > 0 {
+		// Estimate the gauge for a resumed session so preflight and the
+		// status line work before the first call reports real usage.
+		r.ctxTokens = approxTokens(history) + len(r.system)/4
+	}
+	// The gate counts approved mutations so the drive's no-progress detector
+	// can tell working iterations from spinning ones.
+	var mutMu sync.Mutex
+	mutations := 0
+	rawGate := gate(con, *ask && !*autoYes)
+	g := func(c agent.ToolCall) error {
+		err := rawGate(c)
+		if err == nil && mutating[c.Name] {
+			mutMu.Lock()
+			mutations++
+			mutMu.Unlock()
+		}
+		return err
+	}
+	mutCount := func() int { mutMu.Lock(); defer mutMu.Unlock(); return mutations }
+	hooks := renderHooks(g, &r.showThink)
+	// The task tool closes over the live repl: a /provider or /model switch
+	// applies to later spawns, and child token usage lands in the totals
+	// (mutex because parallel children report concurrently).
+	var usageMu sync.Mutex
+	sessOf := func() *Session { return r.sess }
+	tools = append(tools,
+		taskTool(func() agent.Provider { return r.p }, sessOf, 1, *unsafePaths, g,
+			func(u agent.Usage) {
+				usageMu.Lock()
+				defer usageMu.Unlock()
+				r.totIn += u.Input
+				r.totOut += u.Output
+				r.totCache += u.CacheRead
+			}),
+		recallTool(sessOf))
+	// The TUI completes commands, provider names, and model ids on tab.
+	if t, ok := con.(*tuiConsole); ok {
+		t.completer = r.completions
+	}
+	// Pull the endpoint's model list once, for /model. Best-effort: an endpoint
+	// without discovery just leaves the list empty; /model still switches by
+	// name. A published context length fills in for a profile that set none
+	// (an explicit "context" in providers.json stays the override).
+	r.ctxLimit = capWindow(r.ctxLimit)
+	r.models, r.modelCtx = discoverModels(p)
+	if r.ctxLimit == 0 {
+		if c := r.modelCtx[r.model]; c > 0 {
+			r.ctxLimit = capWindow(c)
+		}
+	}
+	if r.p != nil && r.ctxLimit == 0 { // assume rather than fly blind; banner keeps asking
+		r.ctxLimit, r.assumedCtx = tune.AssumedContext, true
+	}
+
+	cwd, _ := os.Getwd()
+	r.banner(cwd, *ask && !*autoYes, len(history), buildErr)
+	r.pushStatus()
+
+	// Ctrl-C cancels the running turn, not sesh; pressed twice within
+	// two seconds it quits (after restoring the terminal).
+	intr := newInterrupts(func() {
+		con.Close()
+		r.goodbye()
+	})
+
+	for {
+		line, err := con.ReadLine("-> ")
+		if err != nil {
+			emit("\n")
+			r.goodbye()
+			return
+		}
+		if line == "" {
+			continue
+		}
+		if handled, quit := r.command(line); quit {
+			r.goodbye()
+			return
+		} else if handled {
+			continue
+		}
+
+		if r.p == nil {
+			emit("%s  no active provider. run /provider add to set one up.%s\n\n", yellow, reset)
+			continue
+		}
+		if r.preflight(line) {
+			continue // the message can never fit; nothing was sent
+		}
+		ctx, done := intr.turnContext()
+		stopSpin := r.spin()
+		turns, ok := r.runTurn(ctx, line, tools, hooks)
+		done()
+		// Goal-driven persistence: the request is the goal; a judged not-done
+		// keeps the session working until done, blocked, stuck, or the cap.
+		// Conversation (no tool use) never drives. Ctrl-C pauses to the prompt.
+		if ok {
+			drive(r, driveConfig{
+				request: line, maxIters: *maxIters, tools: tools, hooks: hooks,
+				mutations: mutCount, turnCtx: intr.turnContext,
+				say: func(f string, a ...any) {
+					emit("%s  "+f+"%s\n", append(append([]any{dim}, a...), reset)...)
+				},
+			}, turns)
+		}
+		stopSpin()
+	}
+}
+
+// interrupts watches Ctrl-C for the whole session. During a turn the first
+// press cancels that turn; a second press within the window (whether or not a
+// turn is running) restores the terminal and quits. The watcher is persistent
+// so the quit window spans the gap after a cancelled turn ends, which is
+// exactly when an impatient second press arrives.
+type interrupts struct {
+	mu      sync.Mutex
+	cancel  context.CancelFunc // non-nil while a turn is running
+	last    time.Time
+	cleanup func()
+}
+
+const doublePressWindow = 2 * time.Second
+
+func newInterrupts(cleanup func()) *interrupts {
+	in := &interrupts{cleanup: cleanup}
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt)
+	go func() {
+		for range sigc {
+			in.mu.Lock()
+			double := time.Since(in.last) < doublePressWindow
+			in.last = time.Now()
+			cancel := in.cancel
+			in.mu.Unlock()
+			switch {
+			case double:
+				in.cleanup()
+				os.Exit(130)
+			case cancel != nil:
+				emit("\n%s  cancelling turn... (ctrl-c again to quit)%s\n", yellow, reset)
+				cancel()
+			default:
+				emit("\n%s  (ctrl-c again to quit)%s\n", yellow, reset)
+			}
+		}
+	}()
+	return in
+}
+
+// turnContext hands out a cancellable context for one turn and the cleanup
+// that detaches it from the watcher.
+func (in *interrupts) turnContext() (context.Context, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	in.mu.Lock()
+	in.cancel = cancel
+	in.mu.Unlock()
+	return ctx, func() {
+		in.mu.Lock()
+		in.cancel = nil
+		in.mu.Unlock()
+		cancel()
+	}
+}

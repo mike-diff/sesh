@@ -1,0 +1,14 @@
+Project rules to remember for this whole engagement, acknowledge briefly without using tools: (1) never add a Redis dependency, ops enforces a 64MB memory ceiling on the cache boxes so all caching stays in-process. (2) history filenames are hashed with FNV-32a, not SHA-256, because hash/fnv is stdlib and we need no cryptographic strength. (3) we already tried DECSTBM scroll regions for the footer UI and abandoned them because scrolled lines never reach the terminal scrollback, never retry that. (4) tests run with: go test -tags rigfixture ./... (5) the staging gateway listens on port 7443, production is 8443.
+Read server.go and explain the request flow of every handler in detail, including validation order and what happens when the queue is full.
+Read store.go and explain the locking strategy and the cursor pagination in detail, including why nothing escapes by pointer.
+Read worker.go and explain the retry and dead-letter policy in detail, including the backoff math for every attempt number.
+Compare the error handling philosophy across all three files in detail: what is consistent, what is not, and what you would unify.
+Trace the full lifecycle of one ticket from POST /tickets to a delivered ticket.created notification, step by step, naming every function involved.
+What are the three biggest concurrency risks in this service? Explain each in detail with the exact code paths involved.
+If we needed to add caching for handleList, describe in detail how you would do it within our project rules, and which rule constrains the design.
+Now answer from our conversation, searching archived history with recall if needed: which caching technology is forbidden in this project and why exactly?
+From our conversation: which hash function do we use for history filenames and why was it chosen over the alternative?
+From our conversation: which footer approach was already tried and abandoned, and why must we never retry it?
+From our conversation: what is the exact command to run this project's tests, including build tags?
+From our conversation: which port does the staging gateway listen on?
+exit

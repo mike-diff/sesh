@@ -1,0 +1,27 @@
+#!/bin/sh
+# Example gate mod: rename to "gate" and chmod +x to activate.
+# Every mutating tool call (write, edit, bash, mutating tool mods) arrives as
+# one JSON object on stdin: {"tool": "...", "args": {...}, "cwd": "..."}.
+# Exit 0 allows the call; any other exit denies it, and the first stdout line
+# is returned to the model as the reason. A broken gate fails closed.
+# This policy blocks shell commands that touch the credential store or look
+# like recursive deletes, and allows everything else.
+
+in=$(cat)
+
+case "$in" in
+*'"tool":"bash"'*)
+    case "$in" in
+    *.sesh*)
+        echo "gate policy: shell commands may not touch .sesh (credentials live there)"
+        exit 1
+        ;;
+    *'rm -rf'* | *'rm -fr'*)
+        echo "gate policy: recursive deletes are blocked; delete specific paths instead"
+        exit 1
+        ;;
+    esac
+    ;;
+esac
+
+exit 0

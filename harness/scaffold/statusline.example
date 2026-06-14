@@ -1,0 +1,9 @@
+#!/bin/sh
+# Example statusline: rename to "statusline" and chmod +x to activate.
+# Session context arrives as JSON on stdin; the first stdout line is shown
+# in the footer, ANSI colors included. This one needs no dependencies.
+
+in=$(cat)
+model=${in#*\"model\":\"}; model=${model%%\"*}
+session=${in#*\"session\":\"}; session=${session%%\"*}
+printf '%s · session %s\n' "$model" "$session"

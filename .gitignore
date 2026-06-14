@@ -1,0 +1,13 @@
+# compiled binary
+/bin/
+
+# editor/tool droppings
+*.tmp
+
+# project-local sesh mods and config are personal, never committed
+.sesh/
+
+# local agent session state (worktrees, settings)
+.claude/
+.pi/
+.cursor/

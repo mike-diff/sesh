@@ -1,0 +1,32 @@
+{
+  "_readme": [
+    "MCP servers for the mcp tool. Activate by renaming this file to mcp.json.",
+    "Definitions live here (global) ONLY: a server is code running with your",
+    "permissions. A project may SELECT which servers are active via a",
+    ".sesh/mcp.json containing exactly {\"servers\": [\"github\"]}; it can",
+    "never define one. Set \"disabled\": true to keep a definition but turn",
+    "the server off everywhere. Two transports: stdio (command+args, a local",
+    "subprocess) and http (url, a remote Streamable-HTTP server). ${VAR} in",
+    "env and headers expands from your environment at connect time and never",
+    "appears in logs or the manifest. Tool calls are always behind the gate;",
+    "verify a new server with: sesh -doctor.",
+    "To build a server, follow the MCP spec at modelcontextprotocol.io."
+  ],
+  "mcpServers": {
+    "github": {
+      "command": "github-mcp-server",
+      "args": ["stdio"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/sandbox"],
+      "disabled": true
+    },
+    "remote-example": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${EXAMPLE_MCP_TOKEN}" },
+      "disabled": true
+    }
+  }
+}
