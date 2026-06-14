@@ -8,6 +8,7 @@ the global mod mount point; a project's `.sesh/` overrides it per file.
     SYSTEM.md          replace the built-in system prompt
     APPEND_SYSTEM.md   append to the system prompt instead of replacing it
     tuning.json        behavioral dials; state only what you change
+                       (takes // comments; see tuning.json.example)
     prompts/           override the model-facing templates (see its README)
     tools/             executables that become agent tools (see its README)
     statusline         executable: owns the footer status line

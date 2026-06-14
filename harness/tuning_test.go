@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,5 +138,45 @@ func TestUsageCoversSurface(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("usage missing %q: an agent cannot discover that feature", want)
 		}
+	}
+}
+
+// TestStripJSONComments: // and /* */ are removed so a commented tuning.json
+// parses, but a // inside a string value is left alone. Breaker: drop the
+// inString guard and the URL's // gets eaten, corrupting the value.
+func TestStripJSONComments(t *testing.T) {
+	in := `{
+		// a line comment
+		"handoff_pct": 80, /* trailing block */
+		"brief_model": "http://host/x" // keep the slashes in the value
+	}`
+	var got Tuning
+	if err := json.Unmarshal(stripJSONComments([]byte(in)), &got); err != nil {
+		t.Fatalf("stripped JSONC must parse: %v", err)
+	}
+	if got.HandoffPct != 80 {
+		t.Fatalf("value past a comment lost: %+v", got)
+	}
+	if got.BriefModel != "http://host/x" {
+		t.Fatalf("// inside a string must survive: %q", got.BriefModel)
+	}
+}
+
+// TestShippedTuningExampleParses: the example we ship must, once comments are
+// stripped, be valid JSON that changes nothing (its active block restates the
+// defaults). Breaker: a stray trailing comma or a typo'd dial in the example.
+func TestShippedTuningExampleParses(t *testing.T) {
+	b, err := scaffoldFS.ReadFile("scaffold/tuning.json.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Tuning
+	if err := json.Unmarshal(stripJSONComments(b), &got); err != nil {
+		t.Fatalf("shipped tuning.json.example is not valid JSONC: %v", err)
+	}
+	merged := defaultTuning()
+	overlayTuning(&merged, got)
+	if merged != defaultTuning() {
+		t.Fatalf("the example's active block must restate the defaults, not change them: %+v", merged)
 	}
 }

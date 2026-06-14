@@ -109,12 +109,57 @@ func loadTuning() Tuning {
 			continue
 		}
 		var got Tuning
-		if json.Unmarshal(b, &got) != nil {
+		if json.Unmarshal(stripJSONComments(b), &got) != nil {
 			continue
 		}
 		overlayTuning(&t, got)
 	}
 	return t
+}
+
+// stripJSONComments removes // line and /* */ block comments so tuning.json can
+// carry the reasoning behind each dial inline (see the shipped
+// tuning.json.example). String literals are left untouched, so a // inside a
+// value (a URL in brief_model, say) survives. Scoped to tuning.json on purpose:
+// it is the one config the harness reads but never rewrites, so the comments
+// are never silently dropped on a save the way they would be in providers.json.
+func stripJSONComments(b []byte) []byte {
+	out := make([]byte, 0, len(b))
+	inString := false
+	for i := 0; i < len(b); i++ {
+		c := b[i]
+		if inString {
+			out = append(out, c)
+			if c == '\\' && i+1 < len(b) { // escaped char: copy it verbatim
+				i++
+				out = append(out, b[i])
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch {
+		case c == '"':
+			inString = true
+			out = append(out, c)
+		case c == '/' && i+1 < len(b) && b[i+1] == '/':
+			for i < len(b) && b[i] != '\n' {
+				i++
+			}
+			if i < len(b) {
+				out = append(out, b[i]) // keep the newline for readable errors
+			}
+		case c == '/' && i+1 < len(b) && b[i+1] == '*':
+			i += 2
+			for i+1 < len(b) && !(b[i] == '*' && b[i+1] == '/') {
+				i++
+			}
+			i++ // step over the closing '*'; the loop's i++ steps over '/'
+		default:
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 func overlayTuning(t *Tuning, got Tuning) {

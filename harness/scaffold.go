@@ -17,13 +17,14 @@ var scaffoldFS embed.FS
 // .example files are inert by name: activating one is a deliberate rename by
 // the user, never an installer side effect.
 var scaffoldFiles = map[string]string{
-	"scaffold/README.md":          "README.md",
-	"scaffold/prompts-README.md":  filepath.Join("prompts", "README.md"),
-	"scaffold/tools-README.md":    filepath.Join("tools", "README.md"),
-	"scaffold/skills-README.md":   filepath.Join("skills", "README.md"),
-	"scaffold/statusline.example": "statusline.example",
-	"scaffold/gate.example":       "gate.example",
-	"scaffold/mcp.json.example":   "mcp.json.example",
+	"scaffold/README.md":           "README.md",
+	"scaffold/prompts-README.md":   filepath.Join("prompts", "README.md"),
+	"scaffold/tools-README.md":     filepath.Join("tools", "README.md"),
+	"scaffold/skills-README.md":    filepath.Join("skills", "README.md"),
+	"scaffold/statusline.example":  "statusline.example",
+	"scaffold/gate.example":        "gate.example",
+	"scaffold/mcp.json.example":    "mcp.json.example",
+	"scaffold/tuning.json.example": "tuning.json.example",
 	// The report-issue skill ships active (not an .example): a public tool
 	// should let any user file a well-formed issue out of the box.
 	"scaffold/skills/report-issue/SKILL.md":                   filepath.Join("skills", "report-issue", "SKILL.md"),
