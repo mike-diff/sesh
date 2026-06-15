@@ -28,13 +28,22 @@ import (
 
 const bashTimeout = 60 * time.Second
 
-const (
-	dim    = "\033[2m"
-	yellow = "\033[33m"
-	red    = "\033[31m"
-	green  = "\033[32m"
-	reset  = "\033[0m"
+// Chrome colors for harness-owned output (notes, diffs, tool I/O). Empty when
+// color is off, so the same format strings print clean text down a pipe or
+// under NO_COLOR. initColor sets them once startup knows the destination.
+var (
+	dim    string
+	yellow string
+	red    string
+	green  string
+	reset  string
 )
+
+func initColor() {
+	if useColor() {
+		dim, yellow, red, green, reset = "\033[2m", "\033[33m", "\033[31m", "\033[32m", "\033[0m"
+	}
+}
 
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, err)
@@ -74,6 +83,7 @@ func Main() {
 	if *update {
 		os.Exit(updateCmd())
 	}
+	initColor()         // resolve ANSI use before any colored output
 	scaffoldHome()      // first run populates ~/.sesh; later runs fill gaps only
 	tune = loadTuning() // dials resolve before anything reads them
 
@@ -339,7 +349,8 @@ func Main() {
 		return err
 	}
 	mutCount := func() int { mutMu.Lock(); defer mutMu.Unlock(); return mutations }
-	hooks := renderHooks(g, &r.showThink)
+	r.md = newMarkdown(func(s string) { emit("%s", s) })
+	hooks := renderHooks(g, &r.showThink, r.md)
 	// The task tool closes over the live repl: a /provider or /model switch
 	// applies to later spawns, and child token usage lands in the totals
 	// (mutex because parallel children report concurrently).

@@ -41,6 +41,7 @@ type repl struct {
 	history  []agent.Turn
 	system   string
 	con      console
+	md       *mdRenderer // styles streamed assistant markdown; nil in print mode
 	// rendering and context policy
 	showThink   bool // render reasoning deltas (they are display-only either way)
 	ctxLimit    int  // model context window in tokens; 0 = unknown
@@ -1068,6 +1069,7 @@ func (r *repl) runTurn(ctx context.Context, line string, tools []agent.Tool, hoo
 	r.history = append(r.history, agent.Turn{Role: "user", Text: line})
 	out, spent, err := agent.Run(ctx, r.p, r.system, r.history, tools, hooks)
 	r.history = out
+	r.md.flush() // emit the message's trailing partial line before the summary
 	emit("\n")
 	if err != nil {
 		r.history = r.history[:mark]
