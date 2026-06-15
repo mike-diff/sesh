@@ -190,11 +190,14 @@ func TestManifestCollapse(t *testing.T) {
 		t.Fatalf("wide line must show both: %q", full)
 	}
 	collapsed := m.manifestLine(10)
-	if !strings.Contains(collapsed, "running") || len([]rune(collapsed)) > 10 && !strings.Contains(collapsed, "running") {
-		t.Fatalf("narrow line must collapse: %q", collapsed)
+	if !strings.Contains(collapsed, "running") {
+		t.Fatalf("a too-narrow line must collapse to a count: %q", collapsed)
 	}
-	if strings.Contains(collapsed, "web") {
-		t.Fatalf("narrow line must not list each proc: %q", collapsed)
+	if strings.Contains(collapsed, "web") || strings.Contains(collapsed, "api") {
+		t.Fatalf("the collapsed line must not list each proc: %q", collapsed)
+	}
+	if len([]rune(collapsed)) >= len([]rune(m.manifestLine(200))) {
+		t.Fatalf("the collapsed line must be shorter than the full one: %q", collapsed)
 	}
 }
 
