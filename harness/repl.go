@@ -967,6 +967,7 @@ func (r *repl) handoff() bool {
 	if r.procs != nil {
 		r.procs.rekey(next.ID)
 	}
+	os.Setenv("SESH_SESSION", next.ID) // mods follow the live session's run dir
 	// The live-instance lock follows the live end of the chain.
 	releaseLock(prior)
 	acquireLock(next.ID)

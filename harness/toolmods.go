@@ -52,8 +52,8 @@ func loadToolMods(taken map[string]bool) ([]agent.Tool, []string) {
 	var notes []string
 	for _, e := range entries {
 		name := e.Name()
-		if strings.HasSuffix(name, ".md") {
-			continue // documentation (the scaffold's README lives here), never a tool
+		if strings.HasSuffix(name, ".md") || strings.HasSuffix(name, ".example") {
+			continue // docs and inert .example mods (activate by renaming), never a tool
 		}
 		path := filepath.Join(toolModsDir(), name)
 		info, err := e.Info()
