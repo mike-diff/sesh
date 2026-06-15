@@ -101,7 +101,7 @@ func (r *repl) setSpinBase() {
 func (r *repl) statusText() string {
 	cwd, _ := os.Getwd()
 	// r.model/r.protocol still hold resolved defaults when no provider was
-	// built, so reporting them would name a brain that was never configured.
+	// built, so showing them would name a model the user never configured.
 	if r.p == nil {
 		return renderStatus(statusInfo{Session: r.sess.ID, Cwd: cwd, NoProvider: true})
 	}

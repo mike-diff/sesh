@@ -77,8 +77,8 @@ func TestKTokens(t *testing.T) {
 }
 
 // TestRenderStatusNoProvider: with no active provider, the status line says so
-// and never names a resolved-default brain. Breaker: drop the NoProvider branch
-// and it falls through to rendering the resolved default as the active brain.
+// and never names a resolved-default model. Breaker: drop the NoProvider branch
+// and it falls through to formatting the empty provider/model fields.
 func TestRenderStatusNoProvider(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	chtmp(t)
@@ -87,6 +87,6 @@ func TestRenderStatusNoProvider(t *testing.T) {
 		t.Fatalf("no-provider status must say so and name the session: %q", got)
 	}
 	if strings.Contains(got, "claude") || strings.Contains(got, "anthropic") {
-		t.Fatalf("must not advertise a brain the user never configured: %q", got)
+		t.Fatalf("must not advertise a model the user never configured: %q", got)
 	}
 }
