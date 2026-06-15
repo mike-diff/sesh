@@ -571,3 +571,28 @@ func TestBudgetGate(t *testing.T) {
 		t.Fatal("zero budget means unlimited")
 	}
 }
+
+// TestLastResponseBlock: the resume banner shows the prior assistant reply, and
+// a long one is tail-trimmed (the conclusion survives, the head is dropped).
+// Breaker: drop the truncation and the head leaks; return the wrong turn and
+// the assistant text is missing.
+func TestLastResponseBlock(t *testing.T) {
+	if lastResponseBlock(nil) != "" {
+		t.Fatal("no history must yield no block")
+	}
+	short := []agent.Turn{{Role: "user", Text: "do it"}, {Role: "assistant", Text: "done: added the endpoint"}}
+	if blk := lastResponseBlock(short); !strings.Contains(blk, "last response") || !strings.Contains(blk, "added the endpoint") {
+		t.Fatalf("short reply must show in full: %q", blk)
+	}
+	long := "HEAD_MARKER " + strings.Repeat("x", 3000) + " TAIL_MARKER"
+	blk := lastResponseBlock([]agent.Turn{{Role: "assistant", Text: long}})
+	if !strings.Contains(blk, "TAIL_MARKER") {
+		t.Fatalf("a long reply must keep its conclusion: %q", blk[:80])
+	}
+	if strings.Contains(blk, "HEAD_MARKER") {
+		t.Fatal("a long reply must drop its head, not flood the banner")
+	}
+	if !strings.Contains(blk, "showing the end") {
+		t.Fatal("truncation must be disclosed")
+	}
+}

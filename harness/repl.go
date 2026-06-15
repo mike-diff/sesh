@@ -1212,3 +1212,36 @@ func lastText(turns []agent.Turn) string {
 	}
 	return ""
 }
+
+// lastResponseBlock formats the prior assistant reply for the resume banner, so
+// reopening a session shows where it left off instead of a bare prompt. A long
+// reply is tail-trimmed (the conclusion is at the end), to a clean line.
+func lastResponseBlock(turns []agent.Turn) string {
+	txt := strings.TrimSpace(lastText(turns))
+	if txt == "" {
+		return ""
+	}
+	const cap = 2000
+	trunc := false
+	if len(txt) > cap {
+		txt = txt[len(txt)-cap:]
+		if i := strings.IndexByte(txt, '\n'); i >= 0 { // start at a line boundary
+			txt = txt[i+1:]
+		}
+		trunc = true
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s─ last response ─%s\n", dim, reset)
+	if trunc {
+		fmt.Fprintf(&b, "%s… (showing the end of a long response)%s\n", dim, reset)
+	}
+	b.WriteString(strings.TrimSpace(txt))
+	return b.String()
+}
+
+// showLastResponse prints the prior assistant reply when resuming a session.
+func (r *repl) showLastResponse() {
+	if blk := lastResponseBlock(r.history); blk != "" {
+		emit("%s\n\n", blk)
+	}
+}
