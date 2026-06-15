@@ -643,8 +643,8 @@ func (m *procManager) logsText(id string, tail int, filter string) (string, bool
 	data, trunc := p.ring.from(p.readOff)
 	body := append([]byte(nil), data...)
 	// A filtered read is a non-destructive peek: it must not advance the cursor
-	// past the lines it didn't show, or an unfiltered read would never see them
-	// (the Claude Code BashOutput footgun). Only a plain read consumes.
+	// past the lines it didn't show, or an unfiltered read would never see them.
+	// Only a plain read consumes.
 	if re == nil {
 		p.readOff = p.ring.total()
 		p.newLines, p.errHits = 0, 0

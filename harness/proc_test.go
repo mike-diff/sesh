@@ -295,7 +295,7 @@ func TestFooterProcRowGeometry(t *testing.T) {
 
 // TestForegroundNoTrailingNewline: a command whose output never ends in a
 // newline still returns its last line. Breaker: drop the cleaner flush and the
-// partial line is lost (a regression from the old bash tool).
+// partial line is lost.
 func TestForegroundNoTrailingNewline(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	m := newProcManager("scale-printf")
@@ -307,7 +307,7 @@ func TestForegroundNoTrailingNewline(t *testing.T) {
 
 // TestProcToolDispatch: the model-facing JSON interface drives the whole
 // lifecycle: start returns a handle, list shows it, logs reads it, stop ends it.
-// Breaker: any action wiring or arg-parsing regression in runTool.
+// Breaker: drop a case from runTool's action switch and that step fails.
 func TestProcToolDispatch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	m := newProcManager("scale-tool")
