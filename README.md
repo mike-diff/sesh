@@ -73,7 +73,7 @@ sesh gives the model nine built-in tools, plus two more that appear only when yo
 - **Observe** (read-only, run in parallel): `read`, `search`, `loc`, `recall`
 - **Change** (gated, run one at a time): `write`, `edit`, `bash`
 - **Delegate**: `task` spawns a read-only subagent with its own fresh context window, so a noisy investigation never clutters the main conversation
-- **Run**: `proc` starts, lists, tails, and stops long-lived background processes (dev servers, watchers); a `bash` command that never returns is auto-promoted here, its output is tracked off-context, a running server survives a context handoff (the successor reuses it instead of duplicating), a port conflict names its holder rather than killing it, and the whole set is reaped when the session exits
+- **Run**: `proc` starts, lists, tails, and stops long-lived background processes (dev servers, watchers); a `bash` command that never returns is auto-promoted here, its output is tracked off-context, a port conflict names its holder rather than killing it, and the whole set is reaped when the session exits (and survives a handoff, see below)
 - **On demand** (zero tokens until you add content): `skill` and `mcp`, the two engines described under [Extending with mods](#extending-with-mods)
 
 Tools are plain values: a schema plus a function. Adding or replacing one is a few lines in the product layer and zero in the core (see [Architecture](#architecture)).
@@ -86,6 +86,7 @@ Long sessions degrade. sesh never re-summarizes a summary. When the context wind
 - a **handoff brief** written by a fresh-context model call reading the sealed transcript: task, decisions, dead ends, files, environment, next step
 - **repo state** from git, not summarized by the model
 - the **most recent exchanges, verbatim**
+- **owned background processes**: a dev server or watcher started this session is inherited by the successor, not killed or relaunched
 
 The old session stays on disk in full and the `recall` tool searches the whole chain, so anything the brief dropped is one tool call away: the boundary is recoverable, not just summarized. `-continue` picks up the newest link. A known context window always hands off near its limit; the thresholds are dials in `tuning.json`.
 
