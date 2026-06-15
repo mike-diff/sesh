@@ -34,3 +34,26 @@ func TestAppendSystemLayersGlobalThenProject(t *testing.T) {
 		t.Fatalf("global must come first so the project layer overrides by position (global %d, project %d)", gi, pi)
 	}
 }
+
+// TestDefaultPromptCarriesFrontendSteering: with no SYSTEM.md override, the
+// built-in prompt ships the always-on frontend design guidance, including its
+// accessibility commitment. Breaker: drop the <frontend> section, or strip its
+// WCAG rule, from defaultPromptTemplate.
+func TestDefaultPromptCarriesFrontendSteering(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	work := t.TempDir()
+	old, _ := os.Getwd()
+	if err := os.Chdir(work); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(old) })
+
+	prompt := systemPrompt()
+	if !strings.Contains(prompt, "<frontend>") {
+		t.Fatalf("the default prompt must ship the frontend section:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "WCAG") {
+		t.Fatal("the frontend section must keep its accessibility (WCAG) rule")
+	}
+}
