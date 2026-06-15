@@ -10,6 +10,33 @@ import (
 	"strings"
 )
 
+// trimDiff splits before and after into lines and trims the common prefix and
+// suffix. The changed region is then a[pre:len(a)-suf] (removed) and
+// b[pre:len(b)-suf] (added). diffBlock and diffStat share it so the rendered
+// diff and its reported magnitude always describe the same change.
+func trimDiff(before, after string) (a, b []string, pre, suf int) {
+	a = strings.Split(before, "\n")
+	b = strings.Split(after, "\n")
+	for pre < len(a) && pre < len(b) && a[pre] == b[pre] {
+		pre++
+	}
+	for suf < len(a)-pre && suf < len(b)-pre && a[len(a)-1-suf] == b[len(b)-1-suf] {
+		suf++
+	}
+	return a, b, pre, suf
+}
+
+// diffStat reports how many lines the change added and removed: the true
+// magnitude, counted before any truncation, so the summary line stays honest
+// even when diffBlock elides the rendered body.
+func diffStat(before, after string) (added, removed int) {
+	if before == after {
+		return 0, 0
+	}
+	a, b, pre, suf := trimDiff(before, after)
+	return len(b) - pre - suf, len(a) - pre - suf
+}
+
 // diffBlock renders the line-level change from before to after: common prefix
 // and suffix lines are trimmed, and the changed middle is emitted as "- " and
 // "+ " lines with one line of unchanged context on each side. Returns "" when
@@ -21,18 +48,7 @@ func diffBlock(before, after string, limit int) string {
 	if limit <= 0 || before == after {
 		return ""
 	}
-	a := strings.Split(before, "\n")
-	b := strings.Split(after, "\n")
-
-	// Trim the common prefix and suffix.
-	pre := 0
-	for pre < len(a) && pre < len(b) && a[pre] == b[pre] {
-		pre++
-	}
-	suf := 0
-	for suf < len(a)-pre && suf < len(b)-pre && a[len(a)-1-suf] == b[len(b)-1-suf] {
-		suf++
-	}
+	a, b, pre, suf := trimDiff(before, after)
 
 	var lines []string
 	if pre > 0 {
@@ -47,9 +63,20 @@ func diffBlock(before, after string, limit int) string {
 	if suf > 0 {
 		lines = append(lines, "  "+a[len(a)-suf])
 	}
-	if len(lines) > limit {
-		dropped := len(lines) - limit
-		lines = append(lines[:limit], fmt.Sprintf("  ... (%d more diff lines)", dropped))
+	return strings.Join(elide(lines, limit), "\n")
+}
+
+// elide caps the diff at limit lines by dropping the middle, not the tail, so a
+// large change still shows where it starts (the removed lines) and what it
+// became (the added lines) instead of only the leading removals. The dropped
+// count is explicit.
+func elide(lines []string, limit int) []string {
+	if len(lines) <= limit {
+		return lines
 	}
-	return strings.Join(lines, "\n")
+	head := limit / 2
+	tail := limit - head
+	out := append([]string{}, lines[:head]...)
+	out = append(out, fmt.Sprintf("  ... (%d more diff lines) ...", len(lines)-limit))
+	return append(out, lines[len(lines)-tail:]...)
 }

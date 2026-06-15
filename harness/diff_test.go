@@ -71,6 +71,9 @@ func TestEditResultCarriesDiff(t *testing.T) {
 	if !strings.Contains(res, "- var v = 1") || !strings.Contains(res, "+ var v = 2") {
 		t.Fatalf("edit result must carry the diff, got %q", res)
 	}
+	if !strings.Contains(res, "(+1 -1)") {
+		t.Fatalf("edit summary must carry the change count, got %q", res)
+	}
 
 	tune.DiffLines = -1
 	if res := writeAndEdit(); strings.Contains(res, "\n") {
@@ -95,5 +98,42 @@ func TestWriteResultCarriesDiff(t *testing.T) {
 	res, isErr = doWrite("n.txt", "rewritten\n", false)
 	if isErr || !strings.Contains(res, "- fresh") || !strings.Contains(res, "+ rewritten") {
 		t.Fatalf("overwrite must diff against the old content, got %q err=%v", res, isErr)
+	}
+	if !strings.Contains(res, "+1 -1") {
+		t.Fatalf("overwrite summary must carry the change count, got %q", res)
+	}
+}
+
+// TestDiffStat counts the lines a change added and removed, before truncation.
+// Breaker: swap the added/removed returns, or count from the untrimmed slices,
+// and the magnitudes are wrong.
+func TestDiffStat(t *testing.T) {
+	add, del := diffStat("a\nb\nc\nd\n", "a\nB1\nB2\nd\n") // b,c -> B1,B2
+	if add != 2 || del != 2 {
+		t.Fatalf("replace: +%d -%d, want +2 -2", add, del)
+	}
+	if add, del := diffStat("x\n", "x\ny\nz\n"); add != 2 || del != 0 {
+		t.Fatalf("insertion: +%d -%d, want +2 -0", add, del)
+	}
+	if add, del := diffStat("same\n", "same\n"); add != 0 || del != 0 {
+		t.Fatalf("no change: +%d -%d, want +0 -0", add, del)
+	}
+}
+
+// TestDiffBalancedTruncation: an over-cap change keeps both removed and added
+// lines by eliding the middle, not the tail. Breaker: revert elide to a tail
+// cut (lines[:limit]) and the additions fall off, leaving no "+ " line.
+func TestDiffBalancedTruncation(t *testing.T) {
+	var before, after strings.Builder
+	for i := 0; i < 30; i++ {
+		before.WriteString("old\n")
+		after.WriteString("new\n")
+	}
+	got := diffBlock(before.String(), after.String(), 10)
+	if !strings.Contains(got, "- old") || !strings.Contains(got, "+ new") {
+		t.Fatalf("truncated diff must keep both sides:\n%s", got)
+	}
+	if !strings.Contains(got, "more diff lines)") {
+		t.Fatalf("elision marker missing:\n%s", got)
 	}
 }

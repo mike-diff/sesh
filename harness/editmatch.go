@@ -318,7 +318,8 @@ func doEditHardened(path, old, new string, unsafe bool) (string, bool) {
 	}
 	res := "applied 1 edit to " + path
 	if d := diffBlock(text, out, tune.DiffLines); d != "" {
-		res += "\n" + d
+		add, del := diffStat(text, out)
+		res += fmt.Sprintf(" (+%d -%d)\n%s", add, del, d)
 	}
 	return res, false
 }
