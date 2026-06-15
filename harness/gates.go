@@ -33,7 +33,7 @@ func gate(c console, ask bool) func(agent.ToolCall) error {
 	mod := findGateMod()
 	var mu sync.Mutex
 	return func(tc agent.ToolCall) error {
-		if !mutating[tc.Name] {
+		if !mutates(tc) {
 			return nil
 		}
 		if err := runGateMod(mod, tc); err != nil {
@@ -84,7 +84,7 @@ func budgetGate(n int, inner func(agent.ToolCall) error) func(agent.ToolCall) er
 func printGate(autoYes bool) func(agent.ToolCall) error {
 	mod := findGateMod()
 	return func(c agent.ToolCall) error {
-		if !mutating[c.Name] {
+		if !mutates(c) {
 			return nil
 		}
 		if !autoYes {

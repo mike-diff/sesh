@@ -14,6 +14,7 @@ the global mod mount point; a project's `.sesh/` overrides it per file.
     statusline         executable: owns the footer status line
     gate               executable: rules on every mutating tool call
     sessions/ chains/  transcripts and handoff ledgers (plain JSON/JSONL)
+    run/               background-process logs, cleared when a session exits
 
 The `.example` files are inert documentation: activate one by renaming it,
 for example `mv gate.example gate && chmod +x gate`.

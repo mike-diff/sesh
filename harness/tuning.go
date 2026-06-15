@@ -64,6 +64,22 @@ type Tuning struct {
 	// true to reclaim the tokens when you only run strong models. Inverted so
 	// the zero value keeps the default, like every dial.
 	SkillNoteOff bool `json:"skill_note_off,omitempty"`
+	// ProcPromoteSecs is how long a foreground bash command may run before it
+	// is promoted to a tracked background process instead of being killed.
+	// Default 60: a server or a slow build outlives this and keeps running with
+	// a handle, rather than dying at the timeout and losing its output.
+	ProcPromoteSecs int `json:"proc_promote_secs,omitempty"`
+	// MaxProcs caps how many background processes one session may own at once;
+	// past it, proc start refuses (loud, never silent). Default 10.
+	MaxProcs int `json:"max_procs,omitempty"`
+	// ProcLogTail is the default number of recent lines a proc logs read
+	// returns when no explicit tail is given. Default 200.
+	ProcLogTail int `json:"proc_log_tail,omitempty"`
+	// ProcSpillOff drops the on-disk log file for background processes (the
+	// in-memory ring still serves reads). Default off, so logs also spill to
+	// ~/.sesh/run/<session>/<id>.log for inspection. Inverted so the zero
+	// value keeps the default, like every dial.
+	ProcSpillOff bool `json:"proc_spill_off,omitempty"`
 	// BriefProvider and BriefModel aim handoff-brief writing at a different
 	// brain than the worker, typically a cheap local model writing briefs for
 	// an expensive one. Empty (the default) means the worker writes its own.
@@ -88,6 +104,9 @@ func defaultTuning() Tuning {
 		DiffLines:         40,
 		SkillManifestMax:  50,
 		McpManifestMax:    100,
+		ProcPromoteSecs:   60,
+		MaxProcs:          10,
+		ProcLogTail:       200,
 	}
 }
 
@@ -178,6 +197,9 @@ func overlayTuning(t *Tuning, got Tuning) {
 	set(&t.RecallLinks, got.RecallLinks)
 	set(&t.SkillManifestMax, got.SkillManifestMax)
 	set(&t.McpManifestMax, got.McpManifestMax)
+	set(&t.ProcPromoteSecs, got.ProcPromoteSecs)
+	set(&t.MaxProcs, got.MaxProcs)
+	set(&t.ProcLogTail, got.ProcLogTail)
 	// DiffLines accepts -1 (disable), so its overlay applies on any nonzero.
 	if got.DiffLines != 0 {
 		t.DiffLines = got.DiffLines
@@ -185,6 +207,9 @@ func overlayTuning(t *Tuning, got Tuning) {
 	// Booleans overlay on true: a file states the flag only to turn it on.
 	if got.SkillNoteOff {
 		t.SkillNoteOff = true
+	}
+	if got.ProcSpillOff {
+		t.ProcSpillOff = true
 	}
 	sets := func(dst *string, v string) {
 		if v != "" {

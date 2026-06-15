@@ -159,15 +159,18 @@ func (c *plainConsole) Select(title string, items []string, current int) (int, e
 const snippetBase rune = 0xE000
 
 type tuiConsole struct {
-	mu     sync.Mutex
-	out    *os.File
-	in     *bufio.Reader
-	rows   int
-	cols   int
-	status string
-	footer bool // status+input rows are currently drawn at the content tail
-	col    int  // logical column at the content tail (0 = fresh line)
-	pad    bool // footer was drawn after a partial line, behind a pushed \n
+	mu         sync.Mutex
+	out        *os.File
+	in         *bufio.Reader
+	rows       int
+	cols       int
+	status     string
+	procStatus string // the optional process row; "" means no row
+	footer     bool   // status+input rows are currently drawn at the content tail
+	footerProc bool   // the last footer draw included the process row
+	col        int    // logical column at the content tail (0 = fresh line)
+	pad        bool   // footer was drawn after a partial line, behind a pushed \n
+	atExit     func() // run on signal-driven exit (reap owned processes)
 
 	// the input row's editor state
 	prompt string
@@ -210,9 +213,12 @@ func newTUI() (*tuiConsole, error) {
 	// deliberately not handled here: main owns Ctrl-C (cancel turn, then quit)
 	// and calls Close itself before exiting.
 	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, syscall.SIGTERM)
+	signal.Notify(sigc, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-sigc
+		if t.atExit != nil {
+			t.atExit() // reap owned processes before the terminal goes
+		}
 		t.Close()
 		os.Exit(143)
 	}()
@@ -347,11 +353,22 @@ func (t *tuiConsole) drawFooterLocked() {
 	if !strings.ContainsRune(s, 0x1b) && segWidth(s) > t.cols {
 		s = clipToWidth(s, t.cols)
 	}
-	fmt.Fprintf(t.out, "\r\033[2K%s\n", div)             // top divider
-	fmt.Fprint(t.out, "\r\033[2K\n")                     // input row (drawn below)
-	fmt.Fprintf(t.out, "\r\033[2K%s\n", div)             // bottom divider
-	fmt.Fprintf(t.out, "\r\033[2K%s%s%s", dim, s, reset) // status, no trailing \n
-	fmt.Fprint(t.out, "\033[2A")                         // up from status to the input row
+	fmt.Fprintf(t.out, "\r\033[2K%s\n", div) // top divider
+	fmt.Fprint(t.out, "\r\033[2K\n")         // input row (drawn below)
+	fmt.Fprintf(t.out, "\r\033[2K%s\n", div) // bottom divider
+	t.footerProc = t.procStatus != ""
+	if t.footerProc {
+		ps := t.procStatus
+		if segWidth(ps) > t.cols {
+			ps = clipToWidth(ps, t.cols)
+		}
+		fmt.Fprintf(t.out, "\r\033[2K%s%s%s\n", dim, s, reset) // status, with \n
+		fmt.Fprintf(t.out, "\r\033[2K%s", ps)                  // process row, no \n
+		fmt.Fprint(t.out, "\033[3A")                           // up to the input row
+	} else {
+		fmt.Fprintf(t.out, "\r\033[2K%s%s%s", dim, s, reset) // status, no trailing \n
+		fmt.Fprint(t.out, "\033[2A")                         // up to the input row
+	}
 	t.footer = true
 	t.drawInputLocked()
 }
@@ -366,7 +383,12 @@ func (t *tuiConsole) removeFooterLocked() {
 	fmt.Fprint(t.out, "\r\033[2K")        // input row
 	fmt.Fprint(t.out, "\033[1B\r\033[2K") // bottom divider
 	fmt.Fprint(t.out, "\033[1B\r\033[2K") // status
-	fmt.Fprint(t.out, "\033[3A\r\033[2K") // top divider
+	up := 3
+	if t.footerProc {
+		fmt.Fprint(t.out, "\033[1B\r\033[2K") // process row
+		up = 4
+	}
+	fmt.Fprintf(t.out, "\033[%dA\r\033[2K", up) // up to the top divider
 	t.footer = false
 	if t.pad {
 		fmt.Fprint(t.out, "\033[1A\r")
@@ -503,6 +525,30 @@ func (t *tuiConsole) SetStatus(s string) {
 		t.drawFooterLocked()
 		fmt.Fprint(t.out, "\033[?2026l")
 	}
+}
+
+// SetProcLine sets the footer's process row. Empty hides it. Like SetStatus,
+// it redraws in place so a process appearing or finishing is reflected at once.
+func (t *tuiConsole) SetProcLine(s string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if s == t.procStatus {
+		return
+	}
+	t.procStatus = s
+	if t.footer {
+		fmt.Fprint(t.out, "\033[?2026h")
+		t.removeFooterLocked()
+		t.drawFooterLocked()
+		fmt.Fprint(t.out, "\033[?2026l")
+	}
+}
+
+// width is the current terminal column count, for fitting the process row.
+func (t *tuiConsole) width() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.cols
 }
 
 // SetTitle reports turn progress through the terminal title (OSC 2), which

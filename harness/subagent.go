@@ -117,7 +117,7 @@ func taskTool(get func() agent.Provider, getSess func() *Session, depth int, uns
 // the child can spawn its own tasks.
 func childTools(get func() agent.Provider, getSess func() *Session, depth int, unsafePaths bool, gate func(agent.ToolCall) error, report func(agent.Usage)) []agent.Tool {
 	var out []agent.Tool
-	for _, t := range builtinTools(unsafePaths) {
+	for _, t := range builtinTools(unsafePaths, nil) {
 		switch t.Def.Name {
 		case "read", "search", "bash":
 			out = append(out, t)

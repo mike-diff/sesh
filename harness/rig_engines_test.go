@@ -58,7 +58,7 @@ const rigSystem = "You are a coding agent. Complete the user's request. " +
 // file tasks, which inflates false-trigger counts (observed in run 1).
 func observationTools() []agent.Tool {
 	var out []agent.Tool
-	for _, t := range builtinTools(false) {
+	for _, t := range builtinTools(false, nil) {
 		switch t.Def.Name {
 		case "read", "search", "loc":
 			out = append(out, t)
