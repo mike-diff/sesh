@@ -33,7 +33,7 @@ func TestProcStopKillsGroup(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	m := newProcManager("scale-stop")
 	// bash backgrounds a sleep, prints its pid, then waits so the group stays up.
-	p, err := m.start("sleep 30 & echo CHILD $!; wait", "")
+	p, _, err := m.start("sleep 30 & echo CHILD $!; wait", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,4 +329,118 @@ func TestProcToolDispatch(t *testing.T) {
 		t.Fatalf("unknown action must be reported: %q", out)
 	}
 	m.reapAll()
+}
+
+// TestReuseByCommand: starting an identical command twice reuses the running
+// process instead of stacking a duplicate. Breaker: drop findRunningByCommand
+// and a second dev server is launched.
+func TestReuseByCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newProcManager("scale-reuse")
+	p1, reused, err := m.start("sleep 30", "svc")
+	if err != nil || reused {
+		t.Fatalf("first start: reused=%v err=%v", reused, err)
+	}
+	p2, reused, err := m.start("sleep 30", "svc")
+	if err != nil || !reused || p2.ID != p1.ID {
+		t.Fatalf("second start must reuse %s: got %v reused=%v err=%v", p1.ID, p2.ID, reused, err)
+	}
+	if n := len(m.views(true)); n != 1 {
+		t.Fatalf("must not duplicate: %d procs", n)
+	}
+	m.reapAll()
+}
+
+// TestHandoffRekey: a handoff re-keys the supervisor to the successor session,
+// moving the run dir and keeping the registry, and seedNote tells the successor
+// what is running. Breaker: drop rekey and the run dir / crash record stay
+// under the dead session id.
+func TestHandoffRekey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newProcManager("sessA")
+	if _, _, err := m.start("sleep 30", "web"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(m.seedNote(), "web") {
+		t.Fatalf("seedNote must list the running process: %q", m.seedNote())
+	}
+	if _, err := os.Stat(runDir("sessA")); err != nil {
+		t.Fatalf("run dir for sessA should exist: %v", err)
+	}
+	m.rekey("sessB")
+	if _, err := os.Stat(runDir("sessA")); !os.IsNotExist(err) {
+		t.Fatal("rekey must move the old run dir away")
+	}
+	if _, err := os.Stat(runDir("sessB")); err != nil {
+		t.Fatalf("run dir must follow to sessB: %v", err)
+	}
+	if !strings.Contains(m.manifestLine(200), "web") {
+		t.Fatal("the process must survive the handoff in the registry")
+	}
+	m.reapAll()
+}
+
+// TestParseAddrInUse: ports are extracted from common address-in-use errors,
+// and unrelated or portless messages yield 0. Breaker: a regex that matches any
+// number, or misses the Go/Node phrasings.
+func TestParseAddrInUse(t *testing.T) {
+	cases := map[string]int{
+		"Error: listen EADDRINUSE: address already in use :::3000": 3000,
+		"listen tcp :8080: bind: address already in use":           8080,
+		"OSError: [Errno 98] Address already in use":               0, // python names no port
+		"compiled successfully, serving on http://localhost":       0, // not a conflict
+	}
+	for msg, want := range cases {
+		if got := parseAddrInUse(msg); got != want {
+			t.Fatalf("parseAddrInUse(%q) = %d, want %d", msg, got, want)
+		}
+	}
+}
+
+// TestPortHolderLive: against the real /proc, the holder of a port this process
+// is listening on is identified (pid + command), and marked foreign when no
+// owned process matches. Breaker: a broken port->inode->pid chain.
+func TestPortHolderLive(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("cannot bind:", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+	pid, cmd, ours := portHolder(port, nil)
+	if pid != os.Getpid() {
+		t.Fatalf("holder pid = %d, want this test process %d", pid, os.Getpid())
+	}
+	if cmd == "" || cmd == "unknown" {
+		t.Fatalf("holder command should be resolved, got %q", cmd)
+	}
+	if ours != nil {
+		t.Fatal("a port we did not start via the supervisor must read as foreign")
+	}
+}
+
+// TestAnnotatePortConflict: a fast-failing process whose output names a busy
+// port gets a log note identifying the foreign holder, and nothing is killed.
+// Breaker: skip the annotation and the model only sees a raw EADDRINUSE.
+func TestAnnotatePortConflict(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("cannot bind:", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	m := newProcManager("scale-conflict")
+	p := &Proc{ID: "proc-1", Name: "web", status: "running", started: time.Now()}
+	p.ring.max = procRingMax
+	m.procs = append(m.procs, p)
+	p.appendLine([]byte("listen tcp :" + strconv.Itoa(port) + ": bind: address already in use\n"))
+
+	m.annotatePortConflict(p)
+
+	out, _ := m.logsText("proc-1", 0, "")
+	if !strings.Contains(out, "in use by pid") || !strings.Contains(out, "does not own") {
+		t.Fatalf("conflict note must name the foreign holder: %q", out)
+	}
 }

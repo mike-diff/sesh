@@ -33,7 +33,8 @@ refuses to own policy. So the code splits along exactly that line:
   remain a clean embeddable library). Files split by concern: `harness.go`
   (Main: flags, wiring, modes), `steering.go` (prompts, identity),
   `tools.go` (built-in tools, confinement), `proc.go` (the background-process
-  supervisor: groups, reap, the cleaned-log read primitive), `search.go` (the shaped search),
+  supervisor: groups, reap, the cleaned-log read primitive, handoff inheritance,
+  port-conflict detection), `search.go` (the shaped search),
   `editmatch.go` (the hardened edit), `diff.go` (the applied diff),
   `gates.go` (oversight policies), `render.go` (output hooks), `repl.go`
   (commands and their state), `drive.go` (goal persistence, the judge),
