@@ -214,6 +214,7 @@ write results carry the diff they applied.
 - Comments explain the non-obvious why, self-contained and timeless. No values
   that rot (model names, versions, magic numbers: say "the resolved default"),
   no issue/PR numbers or changelog narration, no restating what the next line
-  does. One tight line beats a paragraph.
+  does. Name the concrete thing (the field, the value), not a vague metaphor or
+  a bare "it". One tight line beats a paragraph.
 - Keep the core pure. If a change makes `agent/` import a provider, read input,
   or print, it is in the wrong package.
