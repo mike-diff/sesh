@@ -31,6 +31,7 @@ type statusInfo struct {
 	ContextTokens int    `json:"context_tokens"` // current prompt size
 	ContextLimit  int    `json:"context_limit"`  // profile's window, 0 unknown
 	Cwd           string `json:"cwd"`
+	NoProvider    bool   `json:"no_provider,omitempty"` // no provider built; model/protocol are unset
 }
 
 func renderStatus(info statusInfo) string {
@@ -44,6 +45,11 @@ func renderStatus(info statusInfo) string {
 		if line, err := runStatusScript(p, info); err == nil && line != "" {
 			return line
 		}
+	}
+	// No provider built: the format below would otherwise print empty provider
+	// and model fields.
+	if info.NoProvider {
+		return fmt.Sprintf("no provider · session %s · run /provider add", info.Session)
 	}
 	name := info.Provider
 	if name == "" {

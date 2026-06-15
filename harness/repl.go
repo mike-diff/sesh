@@ -100,6 +100,11 @@ func (r *repl) setSpinBase() {
 // re-running a user statusline script every tick.
 func (r *repl) statusText() string {
 	cwd, _ := os.Getwd()
+	// r.model/r.protocol still hold resolved defaults when no provider was
+	// built, so showing them would name a model the user never configured.
+	if r.p == nil {
+		return renderStatus(statusInfo{Session: r.sess.ID, Cwd: cwd, NoProvider: true})
+	}
 	return renderStatus(statusInfo{
 		Provider: r.current, Model: r.model, Protocol: r.protocol,
 		Session: r.sess.ID, Turns: r.turns,
