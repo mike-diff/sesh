@@ -438,6 +438,11 @@ func (r *repl) applyProvider(name string, prof Profile, key string) bool {
 // /model list picks up models added to or removed from the endpoint since
 // startup. Discovery is otherwise refreshed only when the provider changes.
 func (r *repl) reloadCmd() {
+	// Skills can be added mid-session; re-snapshot them for #mention completion
+	// independent of the provider, so this works even before one is configured.
+	if t, ok := r.con.(*tuiConsole); ok && t.mention != nil {
+		t.mention = newMentions(t.mention.sgr)
+	}
 	if r.p == nil {
 		emit("%s  no active provider; run /provider add%s\n\n", dim, reset)
 		return
