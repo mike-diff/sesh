@@ -37,6 +37,7 @@ type repl struct {
 	pcfg     ProvidersConfig
 	creds    map[string]string
 	sess     *Session
+	procs    *procManager // background processes this session owns
 	history  []agent.Turn
 	system   string
 	con      console
@@ -110,6 +111,17 @@ func (r *repl) statusText() string {
 
 func (r *repl) pushStatus() {
 	r.con.SetStatus(r.statusText())
+	r.refreshProcLine()
+}
+
+// refreshProcLine repaints the footer's process row from the live registry.
+// A no-op off a terminal (the plain console has no footer).
+func (r *repl) refreshProcLine() {
+	t, ok := r.con.(*tuiConsole)
+	if !ok || r.procs == nil {
+		return
+	}
+	t.SetProcLine(r.procs.manifestLine(t.width()))
 }
 
 // refreshSystem rebuilds the system prompt with the live identity block.
@@ -123,6 +135,9 @@ func (r *repl) refreshSystem() {
 // conversation back up. The resume hint only once there is a conversation: an
 // empty session was never saved, so there is nothing to resume.
 func (r *repl) goodbye() {
+	if r.procs != nil {
+		r.procs.reapAll() // owned processes never outlive their session
+	}
 	releaseLock(r.sess.ID)
 	if len(r.history) == 0 {
 		return

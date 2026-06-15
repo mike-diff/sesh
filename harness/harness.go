@@ -178,7 +178,9 @@ func Main() {
 		sess.Protocol, sess.URL, sess.Model = spec.protocol, spec.url, spec.model
 	}
 
-	tools := builtinTools(*unsafePaths)
+	sweepDeadProcs(sess.ID) // reap processes a previously-crashed sesh left behind
+	pm := newProcManager(sess.ID)
+	tools := builtinTools(*unsafePaths, pm)
 	// The engines (skill, mcp) join only when their user-space content exists:
 	// an empty mount costs zero tokens. They are built-ins, so they claim
 	// their names ahead of tool mods like every other built-in.
@@ -218,6 +220,7 @@ func Main() {
 			key: spec.key, keyEnv: spec.keyEnv, current: spec.name,
 			ctxLimit: capWindow(spec.ctxLimit),
 			sess:     sess, history: history, system: system, con: activeConsole,
+			procs: pm,
 		}
 		if len(history) > 0 {
 			// Usage is unknown until the first call; estimate so preflight
@@ -232,7 +235,7 @@ func Main() {
 		raw := printGate(*autoYes)
 		counted := func(c agent.ToolCall) error {
 			err := raw(c)
-			if err == nil && mutating[c.Name] {
+			if err == nil && mutates(c) {
 				mutMu.Lock()
 				mutations++
 				mutMu.Unlock()
@@ -285,6 +288,7 @@ func Main() {
 		if final := lastText(r.history); final != "" {
 			fmt.Println(final) // the run's final reply, not replayed history
 		}
+		pm.reapAll() // a print run that started a server must not leak it
 		releaseLock(r.sess.ID)
 		switch code {
 		case driveStuck, driveMaxIters:
@@ -310,9 +314,10 @@ func Main() {
 		ctxLimit: spec.ctxLimit, showThink: true,
 		ask: *ask && !*autoYes, unsafePaths: *unsafePaths,
 		pcfg: pcfg, creds: creds, sess: sess, history: history,
-		system: system, con: con,
+		system: system, con: con, procs: pm,
 	}
-	r.refreshSystem() // attach the identity block to the live brain
+	pm.onChange = r.refreshProcLine // keep the footer's process row live
+	r.refreshSystem()               // attach the identity block to the live brain
 	if len(history) > 0 {
 		// Estimate the gauge for a resumed session so preflight and the
 		// status line work before the first call reports real usage.
@@ -325,7 +330,7 @@ func Main() {
 	rawGate := gate(con, *ask && !*autoYes)
 	g := func(c agent.ToolCall) error {
 		err := rawGate(c)
-		if err == nil && mutating[c.Name] {
+		if err == nil && mutates(c) {
 			mutMu.Lock()
 			mutations++
 			mutMu.Unlock()
@@ -349,9 +354,11 @@ func Main() {
 				r.totCache += u.CacheRead
 			}),
 		recallTool(sessOf))
-	// The TUI completes commands, provider names, and model ids on tab.
+	// The TUI completes commands, provider names, and model ids on tab, and
+	// reaps owned processes if a signal tears the session down.
 	if t, ok := con.(*tuiConsole); ok {
 		t.completer = r.completions
+		t.atExit = func() { pm.reapAll() }
 	}
 	// Pull the endpoint's model list once, for /model. Best-effort: an endpoint
 	// without discovery just leaves the list empty; /model still switches by

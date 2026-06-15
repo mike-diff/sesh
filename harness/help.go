@@ -67,6 +67,10 @@ MODEL TOOLS (what the agent inside can do)
                                window (depth-capped); parallel when batched
   recall                       search the archived transcripts of this
                                conversation's whole session chain
+  proc                         start/list/logs/stop long-lived background
+                               processes (dev servers); a bash command that
+                               does not return is auto-promoted here. The set
+                               is reaped when the session exits.
 
 FILES AND MODS (project .sesh/ overrides global ~/.sesh/)
   providers.json               named provider profiles (managed by /provider)
@@ -77,7 +81,8 @@ FILES AND MODS (project .sesh/ overrides global ~/.sesh/)
   tuning.json                  the behavioral dials: handoff_pct, hard_pct,
                                max_useful_context, assumed_context,
                                seed_ledger_entries, task_depth, stuck_after,
-                               recall_links, diff_lines, brief_provider,
+                               recall_links, diff_lines, proc_promote_secs,
+                               max_procs, proc_log_tail, brief_provider,
                                brief_model (state only what you change)
   tools/<name>                 executables that become agent tools (global
                                mount only): --schema describes, args JSON on
@@ -88,6 +93,8 @@ FILES AND MODS (project .sesh/ overrides global ~/.sesh/)
                                line is the reason); broken mod fails closed
   statusline                   executable; JSON on stdin, first line shown
   sessions/, chains/           transcripts and chain ledgers (plain JSON/JSONL)
+  run/                         background-process logs and crash records,
+                               cleared when a session exits
 
 EXIT CODES (print mode)
   0 done or blocked-on-user · 1 error · 3 stuck (no progress) · 4 max iterations

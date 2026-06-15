@@ -137,7 +137,7 @@ func runDoctor() int {
 		warn("none (%s: executables there become agent tools; see ~/.sesh/tools/README.md)", toolModsDir())
 	} else {
 		taken := map[string]bool{"task": true, "recall": true}
-		for _, t := range builtinTools(false) {
+		for _, t := range builtinTools(false, nil) {
 			taken[t.Def.Name] = true
 		}
 		mods, notes := loadToolMods(taken)

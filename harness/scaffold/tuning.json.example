@@ -54,6 +54,14 @@
   // Net: soft handoff ~280K, forced ~340K, off the degradation cliff.
   // ------------------------------------------------------------------------
 
+  // --- Background processes (proc tool + auto-promoted bash) ---
+  // "proc_promote_secs": 60,    // a foreground command still running after this
+  //                             // is promoted to a tracked background process
+  //                             // (a server or slow build) instead of killed
+  // "max_procs": 10,            // most background processes one session may own
+  // "proc_log_tail": 200,       // default lines a `proc logs` read returns
+  // "proc_spill_off": false,    // true keeps logs in memory only (no run/ file)
+
   // --- Other dials (full reference: ~/.sesh/README.md and -help) ---
   // "task_depth": 3,            // subagent nesting cap
   // "stuck_after": 3,           // driven iterations w/o a mutation before "stuck"

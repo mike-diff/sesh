@@ -68,11 +68,12 @@ Submit `/help` for the key reference. When stdin or stdout is a pipe it falls ba
 
 ## The tools
 
-sesh gives the model eight built-in tools, plus two more that appear only when you add content for them:
+sesh gives the model nine built-in tools, plus two more that appear only when you add content for them:
 
 - **Observe** (read-only, run in parallel): `read`, `search`, `loc`, `recall`
 - **Change** (gated, run one at a time): `write`, `edit`, `bash`
 - **Delegate**: `task` spawns a read-only subagent with its own fresh context window, so a noisy investigation never clutters the main conversation
+- **Run**: `proc` starts, lists, tails, and stops long-lived background processes (dev servers, watchers); a `bash` command that never returns is auto-promoted here, its output is tracked off-context, and the whole set is reaped when the session exits
 - **On demand** (zero tokens until you add content): `skill` and `mcp`, the two engines described under [Extending with mods](#extending-with-mods)
 
 Tools are plain values: a schema plus a function. Adding or replacing one is a few lines in the product layer and zero in the core (see [Architecture](#architecture)).

@@ -48,7 +48,7 @@ func runTool(t *testing.T, name string, raw json.RawMessage, stdin *bufio.Reader
 
 func toolByName(t *testing.T, name string, unsafePaths bool) agent.Tool {
 	t.Helper()
-	for _, tl := range builtinTools(unsafePaths) {
+	for _, tl := range builtinTools(unsafePaths, nil) {
 		if tl.Def.Name == name {
 			return tl
 		}

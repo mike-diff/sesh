@@ -10,7 +10,7 @@ import "github.com/mike-diff/sesh/agent"
 // mirrors the -unsafe-paths flag (the rig passes false: its fixtures live in
 // the working directory).
 func BenchTools(unsafePaths bool) []agent.Tool {
-	return builtinTools(unsafePaths)
+	return builtinTools(unsafePaths, nil)
 }
 
 // BenchCredential resolves a provider's stored API key the way the product

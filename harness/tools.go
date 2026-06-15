@@ -22,7 +22,7 @@ import (
 
 var mutating = map[string]bool{"write": true, "edit": true, "bash": true}
 
-func builtinTools(unsafePaths bool) []agent.Tool {
+func builtinTools(unsafePaths bool, pm *procManager) []agent.Tool {
 	obj := func(required []string, props map[string]any) map[string]any {
 		return map[string]any{"type": "object", "properties": props, "required": required}
 	}
@@ -44,7 +44,7 @@ func builtinTools(unsafePaths bool) []agent.Tool {
 			Parallel: !mutating[name],
 		}
 	}
-	return []agent.Tool{
+	tools := []agent.Tool{
 		def("read", "Read a file and return its full text.",
 			obj([]string{"path"}, map[string]any{"path": str("Path to the file, relative to the working directory.")}),
 			func(_ context.Context, in toolInput) (string, bool) { return doRead(in.Path, unsafePaths) }),
@@ -60,10 +60,37 @@ func builtinTools(unsafePaths bool) []agent.Tool {
 			}),
 			func(_ context.Context, in toolInput) (string, bool) { return doWrite(in.Path, in.Content, unsafePaths) }),
 		hardenedEditTool(unsafePaths),
-		def("bash", "Run a shell command in the working directory and return its combined output. Use for builds, tests, git, and anything the other tools cannot do.",
+		def("bash", bashDesc(pm),
 			obj([]string{"command"}, map[string]any{"command": str("The command to run.")}),
-			func(ctx context.Context, in toolInput) (string, bool) { return doBash(ctx, in.Command) }),
+			func(ctx context.Context, in toolInput) (string, bool) {
+				if pm != nil {
+					return pm.doBash(ctx, in.Command)
+				}
+				return boundedBash(ctx, in.Command)
+			}),
 	}
+	// proc is a built-in (it claims its name ahead of tool mods), but only when
+	// a supervisor is in play: the top-level session, not subagents or the rig.
+	// It is not Parallel: start/stop mutate; the gate treats those two actions
+	// as mutating via mutates(), so read-only list/logs never prompt.
+	if pm != nil {
+		tools = append(tools, agent.Tool{
+			Def:      agent.ToolDef{Name: "proc", Description: procToolDesc, Schema: procSchema()},
+			Run:      func(_ context.Context, raw json.RawMessage) (string, bool) { return pm.runTool(raw) },
+			Parallel: false,
+		})
+	}
+	return tools
+}
+
+// bashDesc tailors the bash tool's description to whether background promotion
+// is available (it is not in subagents or the rig).
+func bashDesc(pm *procManager) string {
+	base := "Run a shell command in the working directory and return its combined output. Use for builds, tests, git, and anything the other tools cannot do."
+	if pm != nil {
+		base += " A command that does not return on its own (a server) is auto-promoted to a background process; prefer proc(action:\"start\") for those."
+	}
+	return base
 }
 
 type toolInput struct {
@@ -276,7 +303,7 @@ func doWrite(path, content string, unsafe bool) (string, bool) {
 
 // maxBashOutput bounds what one command can buffer in memory. The core later
 // truncates further for the model; this cap is what protects the process from
-// a command that prints gigabytes.
+// a command that prints gigabytes. It is also the proc ring's size.
 const maxBashOutput = 1 << 20
 
 // cappedBuffer keeps at most max bytes and counts what it had to drop. It
@@ -301,9 +328,11 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// doBash runs under the turn's context, so cancelling the turn (Ctrl-C) kills
-// the command instead of waiting out its timeout.
-func doBash(ctx context.Context, command string) (string, bool) {
+// boundedBash is the simple, kill-at-timeout shell used where no process
+// supervisor is in play: subagents, doctor, and the bench rig. The top-level
+// session's bash goes through procManager.doBash instead, which promotes a
+// long-lived command to a tracked background process rather than killing it.
+func boundedBash(ctx context.Context, command string) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, bashTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
