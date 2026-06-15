@@ -31,6 +31,7 @@ type statusInfo struct {
 	ContextTokens int    `json:"context_tokens"` // current prompt size
 	ContextLimit  int    `json:"context_limit"`  // profile's window, 0 unknown
 	Cwd           string `json:"cwd"`
+	NoProvider    bool   `json:"no_provider,omitempty"` // no active brain; model/protocol are unset
 }
 
 func renderStatus(info statusInfo) string {
@@ -44,6 +45,11 @@ func renderStatus(info statusInfo) string {
 		if line, err := runStatusScript(p, info); err == nil && line != "" {
 			return line
 		}
+	}
+	// No active brain: say so plainly instead of advertising a default model the
+	// user never configured (the banner and footer must agree on a fresh run).
+	if info.NoProvider {
+		return fmt.Sprintf("no provider · session %s · run /provider add", info.Session)
 	}
 	name := info.Provider
 	if name == "" {

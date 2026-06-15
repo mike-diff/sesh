@@ -100,6 +100,12 @@ func (r *repl) setSpinBase() {
 // re-running a user statusline script every tick.
 func (r *repl) statusText() string {
 	cwd, _ := os.Getwd()
+	// With no live provider, the model/protocol still carry the resolved
+	// defaults (e.g. anthropic/claude-opus-4-8), which the user never set up;
+	// don't advertise them. Report the real state instead.
+	if r.p == nil {
+		return renderStatus(statusInfo{Session: r.sess.ID, Cwd: cwd, NoProvider: true})
+	}
 	return renderStatus(statusInfo{
 		Provider: r.current, Model: r.model, Protocol: r.protocol,
 		Session: r.sess.ID, Turns: r.turns,

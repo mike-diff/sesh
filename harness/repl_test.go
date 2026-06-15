@@ -596,3 +596,15 @@ func TestLastResponseBlock(t *testing.T) {
 		t.Fatal("truncation must be disclosed")
 	}
 }
+
+// TestStatusTextNoProvider: with no live provider, the status line reports it
+// rather than the resolved-default brain. Breaker: drop the r.p==nil branch in
+// statusText and it renders the phantom model again (the issue #13 regression).
+func TestStatusTextNoProvider(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	chtmp(t)
+	r := &repl{sess: &Session{ID: "s1"}} // p is nil: no provider configured
+	if got := r.statusText(); !strings.Contains(got, "no provider") {
+		t.Fatalf("status with no provider must say so: %q", got)
+	}
+}
