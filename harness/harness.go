@@ -397,6 +397,16 @@ func Main() {
 	}
 	r.pushStatus()
 
+	// Opt-in: ask the latest release whether a newer build exists and nudge,
+	// off the critical path so a slow or absent network never delays the prompt.
+	if tune.UpdateCheck && commit != "source" {
+		go func() {
+			if updateAvailable() {
+				emit("%s  a newer build is available; run /update%s\n\n", dim, reset)
+			}
+		}()
+	}
+
 	// Ctrl-C cancels the running turn, not sesh; pressed twice within
 	// two seconds it quits (after restoring the terminal).
 	intr := newInterrupts(func() {

@@ -84,8 +84,8 @@ FILES AND MODS (project .sesh/ overrides global ~/.sesh/)
                                max_useful_context, assumed_context,
                                seed_ledger_entries, task_depth, stuck_after,
                                recall_links, diff_lines, proc_promote_secs,
-                               max_procs, proc_log_tail, brief_provider,
-                               brief_model (state only what you change)
+                               max_procs, proc_log_tail, update_check,
+                               brief_provider, brief_model (state only what you change)
   tools/<name>                 executables that become agent tools (global
                                mount only): --schema describes, args JSON on
                                stdin, stdout is the result; mutating ones

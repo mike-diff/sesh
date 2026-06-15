@@ -63,6 +63,47 @@ func TestInstallCmd(t *testing.T) {
 // checksum refuses. Breakers: skip the post-download verify and the tamper
 // case overwrites anyway; skip the running-binary checksum compare and the
 // no-op case re-downloads.
+// TestUpdateAvailable: the startup check reports a newer build only when the
+// published checksum differs from the running binary, and stays silent (false)
+// on any failure, so it never raises a false alarm. Breakers: invert the
+// checksum comparison (the matching case reports an update); return true on a
+// fetch error (offline launches nag).
+func TestUpdateAvailable(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "sesh")
+	oldSelf := selfPath
+	selfPath = func() (string, error) { return dest, nil }
+	t.Cleanup(func() { selfPath = oldSelf })
+	if err := os.WriteFile(dest, []byte("running binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	asset := "sesh-" + runtime.GOOS + "-" + runtime.GOARCH
+	mine := fmt.Sprintf("%x", sha256.Sum256([]byte("running binary")))
+	sumsBody := mine + "  " + asset + "\n"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/SHA256SUMS", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, sumsBody)
+	})
+	srv := httptest.NewServer(mux)
+	t.Setenv("SESH_UPDATE_URL", srv.URL)
+
+	if updateAvailable() {
+		t.Fatal("a matching checksum must report no update")
+	}
+	sumsBody = strings.Repeat("0", 64) + "  " + asset + "\n"
+	if !updateAvailable() {
+		t.Fatal("a differing checksum must report an update")
+	}
+	sumsBody = mine + "  sesh-other-platform\n" // no asset for us
+	if updateAvailable() {
+		t.Fatal("a release without our asset must report no update")
+	}
+	srv.Close() // unreachable
+	if updateAvailable() {
+		t.Fatal("an unreachable release must report no update")
+	}
+}
+
 func TestUpdateCmd(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "sesh")
 	oldSelf, oldCommit := selfPath, commit

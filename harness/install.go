@@ -114,18 +114,9 @@ func runUpdate() (changed bool, err error) {
 	if commit == "source" {
 		return false, fmt.Errorf("this sesh was built from source; update with: git pull && go build -o bin/sesh ./cmd/sesh")
 	}
-	base := releaseBase
-	if v := os.Getenv("SESH_UPDATE_URL"); v != "" {
-		base = v
-	}
-	want := "sesh-" + runtime.GOOS + "-" + runtime.GOARCH
-	sums, err := httpGet(base + "/SHA256SUMS")
+	base, asset, expected, err := releaseExpected()
 	if err != nil {
-		return false, fmt.Errorf("check latest release: %w", err)
-	}
-	expected, err := sumFor(string(sums), want)
-	if err != nil {
-		return false, fmt.Errorf("latest release has no %s: %w", want, err)
+		return false, err
 	}
 	self, err := selfPath()
 	if err != nil {
@@ -134,17 +125,54 @@ func runUpdate() (changed bool, err error) {
 	if cur, err := os.ReadFile(self); err == nil && sha256hex(cur) == expected {
 		return false, nil // already up to date
 	}
-	bin, err := httpGet(base + "/" + want)
+	bin, err := httpGet(base + "/" + asset)
 	if err != nil {
-		return false, fmt.Errorf("download %s: %w", want, err)
+		return false, fmt.Errorf("download %s: %w", asset, err)
 	}
 	if sha256hex(bin) != expected {
-		return false, fmt.Errorf("refusing to update: checksum mismatch for %s (corrupt or tampered download)", want)
+		return false, fmt.Errorf("refusing to update: checksum mismatch for %s (corrupt or tampered download)", asset)
 	}
 	if err := replaceFile(self, bin); err != nil {
 		return false, fmt.Errorf("replace %s: %w", self, err)
 	}
 	return true, nil
+}
+
+// releaseExpected fetches the latest release's checksum manifest and returns the
+// download base, this platform's asset name, and that asset's published
+// checksum. Shared by the update itself and the startup availability check.
+func releaseExpected() (base, asset, expected string, err error) {
+	base = releaseBase
+	if v := os.Getenv("SESH_UPDATE_URL"); v != "" {
+		base = v
+	}
+	asset = "sesh-" + runtime.GOOS + "-" + runtime.GOARCH
+	sums, err := httpGet(base + "/SHA256SUMS")
+	if err != nil {
+		return "", "", "", fmt.Errorf("check latest release: %w", err)
+	}
+	expected, err = sumFor(string(sums), asset)
+	if err != nil {
+		return "", "", "", fmt.Errorf("latest release has no %s: %w", asset, err)
+	}
+	return base, asset, expected, nil
+}
+
+// updateAvailable reports whether the latest release differs from the running
+// binary, without downloading it. Best-effort: any failure (offline, no
+// matching asset, unreadable binary) reports false, so the startup check never
+// warns on a transient problem. The caller gates on the source build and dial.
+func updateAvailable() bool {
+	_, _, expected, err := releaseExpected()
+	if err != nil {
+		return false
+	}
+	self, err := selfPath()
+	if err != nil {
+		return false
+	}
+	cur, err := os.ReadFile(self)
+	return err == nil && sha256hex(cur) != expected
 }
 
 // updateCmd is the -update flag: run the update and report the outcome.
@@ -155,7 +183,7 @@ func updateCmd() int {
 		return 1
 	}
 	if !changed {
-		fmt.Println("already up to date")
+		fmt.Printf("already up to date (%s)\n", commit)
 		return 0
 	}
 	self, _ := selfPath()
