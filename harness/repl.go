@@ -63,8 +63,7 @@ type repl struct {
 // current-context gauge, then refreshes the spinner base so the change is
 // visible mid-turn. Shared by afterTurn and every drive iteration: a driven
 // turn's later iterations are real spend and must reach the status line, not
-// just the first sub-turn (the bug that made the count look frozen on long
-// worked turns).
+// just the first sub-turn.
 func (r *repl) account(spent agent.Usage) {
 	r.totIn += spent.Input
 	r.totOut += spent.Output

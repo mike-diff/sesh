@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// Breaker: restore the old break so the first APPEND_SYSTEM.md found wins
-// and the global layer vanishes whenever a project file exists.
+// Breaker: break after the first APPEND_SYSTEM.md found, so a project file
+// shadows the global layer instead of appending to it.
 func TestAppendSystemLayersGlobalThenProject(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
