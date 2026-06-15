@@ -190,11 +190,14 @@ func TestManifestCollapse(t *testing.T) {
 		t.Fatalf("wide line must show both: %q", full)
 	}
 	collapsed := m.manifestLine(10)
-	if !strings.Contains(collapsed, "running") || len([]rune(collapsed)) > 10 && !strings.Contains(collapsed, "running") {
-		t.Fatalf("narrow line must collapse: %q", collapsed)
+	if !strings.Contains(collapsed, "running") {
+		t.Fatalf("a too-narrow line must collapse to a count: %q", collapsed)
 	}
-	if strings.Contains(collapsed, "web") {
-		t.Fatalf("narrow line must not list each proc: %q", collapsed)
+	if strings.Contains(collapsed, "web") || strings.Contains(collapsed, "api") {
+		t.Fatalf("the collapsed line must not list each proc: %q", collapsed)
+	}
+	if len([]rune(collapsed)) >= len([]rune(m.manifestLine(200))) {
+		t.Fatalf("the collapsed line must be shorter than the full one: %q", collapsed)
 	}
 }
 
@@ -292,7 +295,7 @@ func TestFooterProcRowGeometry(t *testing.T) {
 
 // TestForegroundNoTrailingNewline: a command whose output never ends in a
 // newline still returns its last line. Breaker: drop the cleaner flush and the
-// partial line is lost (a regression from the old bash tool).
+// partial line is lost.
 func TestForegroundNoTrailingNewline(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	m := newProcManager("scale-printf")
@@ -304,7 +307,7 @@ func TestForegroundNoTrailingNewline(t *testing.T) {
 
 // TestProcToolDispatch: the model-facing JSON interface drives the whole
 // lifecycle: start returns a handle, list shows it, logs reads it, stop ends it.
-// Breaker: any action wiring or arg-parsing regression in runTool.
+// Breaker: drop a case from runTool's action switch and that step fails.
 func TestProcToolDispatch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	m := newProcManager("scale-tool")
