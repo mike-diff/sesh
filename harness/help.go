@@ -69,8 +69,10 @@ MODEL TOOLS (what the agent inside can do)
                                conversation's whole session chain
   proc                         start/list/logs/stop long-lived background
                                processes (dev servers); a bash command that
-                               does not return is auto-promoted here. The set
-                               is reaped when the session exits.
+                               does not return is auto-promoted here. Reuses a
+                               command already running, reports a port's holder
+                               without killing it, survives handoffs, and is
+                               reaped when the session exits.
 
 FILES AND MODS (project .sesh/ overrides global ~/.sesh/)
   providers.json               named provider profiles (managed by /provider)

@@ -273,21 +273,44 @@ func (m *procManager) launch(command, name string) (*Proc, <-chan error, error) 
 	return p, done, nil
 }
 
-// start runs a background process for the proc tool.
-func (m *procManager) start(command, name string) (*Proc, error) {
+// start runs a background process for the proc tool. reused is true when an
+// identical command is already running and we hand back that process instead of
+// launching a duplicate (the "reuse-if-owned" half of conflict handling).
+func (m *procManager) start(command, name string) (p *Proc, reused bool, err error) {
+	if existing := m.findRunningByCommand(command); existing != nil {
+		return existing, true, nil
+	}
 	if m.bgCount() >= tune.MaxProcs {
-		return nil, fmt.Errorf("at the %d-process limit (max_procs); stop one before starting another", tune.MaxProcs)
+		return nil, false, fmt.Errorf("at the %d-process limit (max_procs); stop one before starting another", tune.MaxProcs)
 	}
 	p, done, err := m.launch(command, name)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	p.mu.Lock()
 	p.bg = true
 	p.mu.Unlock()
 	go func() { m.finalize(p, <-done) }()
 	m.notify()
-	return p, nil
+	return p, false, nil
+}
+
+// findRunningByCommand returns an owned, still-running process with the same
+// command, so the agent (or a handoff successor) reuses it instead of stacking
+// duplicate dev servers.
+func (m *procManager) findRunningByCommand(command string) *Proc {
+	cmd := strings.TrimSpace(command)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, p := range m.procs {
+		p.mu.Lock()
+		match := p.bg && !p.ended && strings.TrimSpace(p.Command) == cmd
+		p.mu.Unlock()
+		if match {
+			return p
+		}
+	}
+	return nil
 }
 
 func (m *procManager) bgCount() int {
@@ -305,11 +328,12 @@ func (m *procManager) bgCount() int {
 }
 
 // finalize records a process's exit, keeping it in the registry so its final
-// logs stay readable until the session ends.
+// logs stay readable until the session ends. A fast failure gets a port-conflict
+// note when its output names a port already in use.
 func (m *procManager) finalize(p *Proc, err error) {
 	p.cl.flush() // the process is done; emit any unterminated last line
 	p.mu.Lock()
-	p.ended = true
+	fast := time.Since(p.started) < 5*time.Second
 	if err == nil {
 		p.status, p.exitCode = "exited", 0
 	} else if ee, ok := err.(*exec.ExitError); ok {
@@ -317,6 +341,13 @@ func (m *procManager) finalize(p *Proc, err error) {
 	} else {
 		p.status, p.exitCode = "crashed", -1
 	}
+	failed := err != nil
+	p.mu.Unlock()
+	if fast && failed {
+		m.annotatePortConflict(p) // appends a note to the log via appendLine
+	}
+	p.mu.Lock()
+	p.ended = true
 	if p.spill != nil {
 		p.spill.Close()
 		p.spill = nil
@@ -469,11 +500,11 @@ func (m *procManager) foregroundOutput(p *Proc) string {
 // ---------------------------------------------------------------------------
 
 const procToolDesc = `Manage long-lived background processes (dev servers, watchers, a client and server at once). action:
-- "start": run command in the background; returns its id. Use this for anything that does not return on its own.
+- "start": run command in the background; returns its id. Use this for anything that does not return on its own. Starting a command that is already running reuses it (no duplicate). If it dies because its port is taken, logs name the holder; never kill a process you did not start.
 - "list": show owned processes with their ports, status, and how much new log output is waiting.
 - "logs": return new output since your last read for one process (incremental). Optional: tail (last N lines), filter (a regex to narrow the view; non-destructive).
 - "stop": terminate one process by id.
-A plain bash command that outlives the timeout is auto-promoted here, so check list/logs if a bash call reports a promotion. Process output is kept out of your context; pull it with logs.`
+A plain bash command that outlives the timeout is auto-promoted here, so check list/logs if a bash call reports a promotion. Running processes survive a handoff: do not restart one the handoff brief says is already up. Process output is kept out of your context; pull it with logs.`
 
 func procSchema() map[string]any {
 	str := func(d string) map[string]any { return map[string]any{"type": "string", "description": d} }
@@ -511,9 +542,12 @@ func (m *procManager) runTool(raw json.RawMessage) (string, bool) {
 		if strings.TrimSpace(a.Command) == "" {
 			return "proc start needs a command", true
 		}
-		p, err := m.start(a.Command, a.Name)
+		p, reused, err := m.start(a.Command, a.Name)
 		if err != nil {
 			return err.Error(), true
+		}
+		if reused {
+			return fmt.Sprintf("%s is already running that command; reused it instead of starting a duplicate", p.ID), false
 		}
 		return fmt.Sprintf("started %s (%s): %s", p.ID, p.Name, a.Command), false
 	case "list":
@@ -887,6 +921,180 @@ func listenPortsForInodes(path string, inodes map[string]bool) []int {
 		}
 	}
 	return ports
+}
+
+// ---------------------------------------------------------------------------
+// Handoff inheritance: the supervisor follows the live end of the chain. The
+// process registry is in-memory, so it survives a handoff for free (same
+// process); rekey just re-points the on-disk paths, and seedNote tells the
+// successor what is already running so it reuses rather than duplicates.
+// ---------------------------------------------------------------------------
+
+// rekey re-points the manager at the successor session on a handoff. The run
+// dir is moved so log spill and the crash record follow the live session;
+// already-open spill descriptors keep writing to the same inode.
+func (m *procManager) rekey(newID string) {
+	m.mu.Lock()
+	old := m.sessionID
+	m.sessionID = newID
+	m.mu.Unlock()
+	if old == newID {
+		return
+	}
+	if _, err := os.Stat(runDir(old)); err == nil {
+		os.MkdirAll(filepath.Dir(runDir(newID)), 0o755)
+		os.Rename(runDir(old), runDir(newID))
+	}
+	m.persist()
+	m.notify()
+}
+
+// seedNote lists the still-running owned processes for a handoff seed, so the
+// successor inherits them instead of starting duplicates.
+func (m *procManager) seedNote() string {
+	var b strings.Builder
+	for _, v := range m.views(true) {
+		if v.ended {
+			continue
+		}
+		port := ""
+		if len(v.ports) > 0 {
+			port = " on " + portsStr(v.ports)
+		}
+		fmt.Fprintf(&b, "- %s (%s)%s: %s\n", v.id, v.name, port, v.command)
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return "background processes already running (inherited; reuse them, do not restart):\n" + strings.TrimRight(b.String(), "\n")
+}
+
+// ---------------------------------------------------------------------------
+// Port-conflict detection: identify who holds a port, and never kill a process
+// this session did not start.
+// ---------------------------------------------------------------------------
+
+var addrInUseRe = regexp.MustCompile(`(?i)(address already in use|eaddrinuse|already in use|port \d+ .*in use)`)
+var portInMsgRe = regexp.MustCompile(`(?i)(?::|port\s+)(\d{2,5})\b`)
+
+// parseAddrInUse extracts the port from an address-in-use error, or 0 if the
+// output is not such an error (or names no port, like Python's bare errno 98).
+func parseAddrInUse(out string) int {
+	if !addrInUseRe.MatchString(out) {
+		return 0
+	}
+	if mm := portInMsgRe.FindStringSubmatch(out); mm != nil {
+		if p, _ := strconv.Atoi(mm[1]); p > 0 && p < 65536 {
+			return p
+		}
+	}
+	return 0
+}
+
+// annotatePortConflict appends a human-and-model-readable note to a process's
+// log when it died because its port was taken, naming the holder. It never
+// kills anything.
+func (m *procManager) annotatePortConflict(p *Proc) {
+	p.mu.Lock()
+	out := string(p.ring.buf)
+	p.mu.Unlock()
+	port := parseAddrInUse(out)
+	if port == 0 {
+		return
+	}
+	m.mu.Lock()
+	owned := append([]*Proc(nil), m.procs...)
+	m.mu.Unlock()
+	pid, cmd, ours := portHolder(port, owned)
+	var note string
+	switch {
+	case ours != nil && ours != p:
+		note = fmt.Sprintf("[sesh] port %d is already served by %s (%s); reuse it instead of starting another.", port, ours.ID, ours.Name)
+	case pid > 0:
+		note = fmt.Sprintf("[sesh] port %d is in use by pid %d (%s), which this session does not own; stop that process or use a different port. sesh will not kill processes it did not start.", port, pid, cmd)
+	default:
+		note = fmt.Sprintf("[sesh] port %d is already in use; start on a different port.", port)
+	}
+	p.appendLine([]byte(note + "\n"))
+}
+
+// portHolder finds the process listening on a TCP port: its pid, command, and
+// the owned Proc if this session started it. pid 0 means nothing holds it.
+func portHolder(port int, owned []*Proc) (pid int, command string, ours *Proc) {
+	inode := listenInodeForPort(port)
+	if inode == "" {
+		return 0, "", nil
+	}
+	pid = pidForInode(inode)
+	if pid == 0 {
+		return 0, "", nil
+	}
+	command = procCmdline(pid)
+	pg := processPgid(pid)
+	for _, p := range owned {
+		if pg > 0 && p.pgid == pg {
+			ours = p
+			break
+		}
+	}
+	return pid, command, ours
+}
+
+func listenInodeForPort(port int) string {
+	for _, f := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n")[1:] {
+			ff := strings.Fields(line)
+			if len(ff) < 10 || ff[3] != "0A" {
+				continue
+			}
+			local := ff[1]
+			i := strings.LastIndexByte(local, ':')
+			if i < 0 {
+				continue
+			}
+			if p, err := strconv.ParseInt(local[i+1:], 16, 32); err == nil && int(p) == port {
+				return ff[9]
+			}
+		}
+	}
+	return ""
+}
+
+func pidForInode(inode string) int {
+	procs, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0
+	}
+	target := "socket:[" + inode + "]"
+	for _, e := range procs {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		fds, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid))
+		if err != nil {
+			continue
+		}
+		for _, fd := range fds {
+			if link, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%s", pid, fd.Name())); err == nil && link == target {
+				return pid
+			}
+		}
+	}
+	return 0
+}
+
+func procCmdline(pid int) string {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil || len(b) == 0 {
+		return "unknown"
+	}
+	parts := strings.Split(strings.TrimRight(string(b), "\x00"), "\x00")
+	return clip(strings.Join(parts, " "), 60)
 }
 
 // ---------------------------------------------------------------------------

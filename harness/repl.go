@@ -934,7 +934,13 @@ func (r *repl) handoff() bool {
 	if r.ctxLimit > 0 {
 		budget = r.ctxLimit / 8
 	}
-	next := seedChain(r.sess, brief, entry, mechanicalFacts(), verbatimTail(r.history, budget))
+	mech := mechanicalFacts()
+	if r.procs != nil {
+		if note := r.procs.seedNote(); note != "" {
+			mech += "\n" + note // the successor inherits running processes, not duplicates them
+		}
+	}
+	next := seedChain(r.sess, brief, entry, mech, verbatimTail(r.history, budget))
 	if err := next.save(); err != nil {
 		emit("%s  could not save the new session: %v%s\n", red, err, reset)
 		return false
@@ -956,6 +962,11 @@ func (r *repl) handoff() bool {
 	r.sess = next
 	r.history = next.Turns
 	r.ctxTokens = 0
+	// Owned processes follow the live end of the chain: a dev server must not
+	// die just because the context filled up.
+	if r.procs != nil {
+		r.procs.rekey(next.ID)
+	}
 	// The live-instance lock follows the live end of the chain.
 	releaseLock(prior)
 	acquireLock(next.ID)
