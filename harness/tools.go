@@ -295,7 +295,8 @@ func doWrite(path, content string, unsafe bool) (string, bool) {
 	res := fmt.Sprintf("wrote %s (%d bytes)", path, len(content))
 	if hadPrev {
 		if d := diffBlock(prev, content, tune.DiffLines); d != "" {
-			res += "\n" + d
+			add, del := diffStat(prev, content)
+			res = fmt.Sprintf("wrote %s (%d bytes, +%d -%d)\n%s", path, len(content), add, del, d)
 		}
 	}
 	return res, false
