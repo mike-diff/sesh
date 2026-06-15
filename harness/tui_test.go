@@ -6,6 +6,15 @@ import (
 	"testing"
 )
 
+// TestSegWidthIgnoresANSI: a segment carrying highlight SGR measures by its
+// visible width, so the input window math stays aligned. Breaker: stop
+// stripping ANSI in segWidth and the escape bytes inflate the width.
+func TestSegWidthIgnoresANSI(t *testing.T) {
+	if w := segWidth("\033[35mx\033[0m"); w != 1 {
+		t.Fatalf("segWidth = %d, want 1 (SGR must not count)", w)
+	}
+}
+
 func TestStripANSI(t *testing.T) {
 	cases := map[string]string{
 		"plain":                      "plain",

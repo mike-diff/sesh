@@ -371,6 +371,7 @@ func Main() {
 	if t, ok := con.(*tuiConsole); ok {
 		t.completer = r.completions
 		t.atExit = func() { pm.reapAll() }
+		t.mention = newMentions(r.md.pal.accent) // #skill / @file completion + highlight
 	}
 	// Pull the endpoint's model list once, for /model. Best-effort: an endpoint
 	// without discovery just leaves the list empty; /model still switches by

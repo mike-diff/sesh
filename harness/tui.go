@@ -187,6 +187,7 @@ type tuiConsole struct {
 	draft     []rune // stashed draft while navigating history
 	histPath  string
 	completer func(line string) []string
+	mention   *mentions // recognizes/completes/highlights #skill and @file tokens; nil disables
 }
 
 func newTUI() (*tuiConsole, error) {
@@ -433,6 +434,7 @@ func (t *tuiConsole) drawInputLocked() {
 // segments renders each buffer rune as its display string: masked, newline
 // marks, snippet labels, or the rune itself.
 func (t *tuiConsole) segments() []string {
+	hi := t.mentionMask()
 	segs := make([]string, len(t.buf))
 	for i, r := range t.buf {
 		switch {
@@ -446,13 +448,37 @@ func (t *tuiConsole) segments() []string {
 		default:
 			segs[i] = string(r)
 		}
+		if hi != nil && hi[i] {
+			// Self-contained per rune, so the sliding window can never split a
+			// color span; segWidth ignores the SGR so columns stay aligned.
+			segs[i] = t.mention.sgr + segs[i] + ansiReset
+		}
 	}
 	return segs
 }
 
+// mentionMask marks the buffer runes that fall inside a recognized #skill or
+// @file token, or nil when there is nothing to highlight.
+func (t *tuiConsole) mentionMask() []bool {
+	if t.mention == nil || t.mask || t.mention.sgr == "" {
+		return nil
+	}
+	spans := t.mention.spans(t.buf)
+	if len(spans) == 0 {
+		return nil
+	}
+	hi := make([]bool, len(t.buf))
+	for _, s := range spans {
+		for i := s[0]; i < s[1]; i++ {
+			hi[i] = true
+		}
+	}
+	return hi
+}
+
 func segWidth(s string) int {
 	w := 0
-	for _, r := range s {
+	for _, r := range stripANSI(s) { // a segment may carry mention-highlight SGR
 		w += runeWidth(r)
 	}
 	return w
@@ -643,6 +669,9 @@ func (t *tuiConsole) readLine(prompt string, mask bool) (string, error) {
 			if !mask {
 				t.completeLocked()
 			}
+		case r == ' ' && !mask: // a space closes an @file token: normalize it to its path
+			t.normalizeLocked()
+			t.insertLocked(' ')
 		case r == 0x1b:
 			t.mu.Unlock()
 			t.handleEscape()
@@ -821,20 +850,35 @@ func (t *tuiConsole) histMoveLocked(delta int) {
 // repl-provided completions; when several remain and no progress was made,
 // they are listed in the transcript above the footer.
 func (t *tuiConsole) completeLocked() {
+	// A #skill or @file token under the cursor completes in place, anywhere in
+	// the line; everything else falls back to whole-line command completion.
+	if t.mention != nil {
+		if start, tok, ok := mentionToken(t.buf, t.pos); ok {
+			if cands := t.mention.complete(tok); len(cands) > 0 {
+				t.completeRangeLocked(start, t.pos, cands)
+				return
+			}
+		}
+	}
 	if t.completer == nil || t.pos != len(t.buf) {
 		return
 	}
-	cands := t.completer(string(t.buf))
-	if len(cands) == 0 {
-		return
+	if cands := t.completer(string(t.buf)); len(cands) > 0 {
+		t.completeRangeLocked(0, len(t.buf), cands)
 	}
+}
+
+// completeRangeLocked extends buf[start:end] to the longest common prefix of the
+// candidates; when that makes no progress and several remain, it lists them dim
+// above the footer.
+func (t *tuiConsole) completeRangeLocked(start, end int, cands []string) {
 	lcp := cands[0]
 	for _, c := range cands[1:] {
 		lcp = commonPrefix(lcp, c)
 	}
-	if len([]rune(lcp)) > len(t.buf) {
-		t.buf = []rune(lcp)
-		t.pos = len(t.buf)
+	if repl := []rune(lcp); len(repl) > end-start {
+		t.buf = append(t.buf[:start], append(repl, t.buf[end:]...)...)
+		t.pos = start + len(repl)
 		return
 	}
 	if len(cands) > 1 {
@@ -846,6 +890,26 @@ func (t *tuiConsole) completeLocked() {
 		t.writeLocked(fmt.Sprintf("%s  %s%s\n", dim, strings.Join(shown, "  "), reset))
 		t.drawFooterLocked()
 	}
+}
+
+// normalizeLocked rewrites the @file token ending at the cursor to its
+// working-directory relative path, the moment a space closes it. A #skill or an
+// unresolved/ambiguous @name is left exactly as typed.
+func (t *tuiConsole) normalizeLocked() {
+	if t.mention == nil {
+		return
+	}
+	start, tok, ok := mentionToken(t.buf, t.pos)
+	if !ok || len(tok) < 2 || tok[0] != '@' {
+		return
+	}
+	rep, ok := t.mention.resolve(tok)
+	if !ok || rep == tok {
+		return
+	}
+	repR := []rune(rep)
+	t.buf = append(t.buf[:start], append(repR, t.buf[t.pos:]...)...)
+	t.pos = start + len(repR)
 }
 
 // ---------------------------------------------------------------------------
