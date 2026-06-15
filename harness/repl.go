@@ -482,7 +482,7 @@ func (r *repl) updateCmd() {
 		return
 	}
 	if !changed {
-		emit("%s  already up to date%s\n\n", dim, reset)
+		emit("%s  already up to date (%s)%s\n\n", dim, commit, reset)
 		return
 	}
 	self, err := selfPath()

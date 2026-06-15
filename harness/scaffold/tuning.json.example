@@ -68,6 +68,8 @@
   // "seed_ledger_entries": 10,  // chain-ledger entries carried in a handoff seed
   // "recall_links": 50,         // chain links one recall call searches
   // "diff_lines": 40,           // edit/write diff lines fed back (-1 disables)
+  // "update_check": false,      // true: interactive startup checks GitHub for a
+  //                             // newer build and nudges you to run /update
   // "skill_note_off": false,    // true reclaims tokens on strong-only setups
   // "brief_provider": "",       // write handoff briefs with another profile...
   // "brief_model": ""           // ...or another model (e.g. a cheap local one)

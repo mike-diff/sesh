@@ -89,6 +89,11 @@ type Tuning struct {
 	// cheap-brief experiment.
 	BriefProvider string `json:"brief_provider,omitempty"`
 	BriefModel    string `json:"brief_model,omitempty"`
+	// UpdateCheck, when on, has interactive startup ask the latest release
+	// whether a newer build exists and, if so, print a one-line nudge to run
+	// /update. Default off: it is a network call to GitHub on every launch, so
+	// it is opt-in rather than phoning home for everyone.
+	UpdateCheck bool `json:"update_check,omitempty"`
 }
 
 func defaultTuning() Tuning {
@@ -210,6 +215,9 @@ func overlayTuning(t *Tuning, got Tuning) {
 	}
 	if got.ProcSpillOff {
 		t.ProcSpillOff = true
+	}
+	if got.UpdateCheck {
+		t.UpdateCheck = true
 	}
 	sets := func(dst *string, v string) {
 		if v != "" {
