@@ -167,8 +167,7 @@ func TestDriveContinueThreadsReason(t *testing.T) {
 // TestDriveAccumulatesTokens: every drive iteration's usage must reach the
 // status-line totals, not just the first sub-turn. Breaker: drop the
 // account() call in drive's loop and the worker iteration's tokens vanish
-// from totIn/totOut, exactly the bug that froze the count on long worked
-// turns. Pre-seeded totals prove accumulation, not assignment.
+// from totIn/totOut. Pre-seeded totals prove accumulation, not assignment.
 func TestDriveAccumulatesTokens(t *testing.T) {
 	p := &seqChat{fns: []func(context.Context) (agent.Reply, error){
 		reply(`{"done": false, "blocked": false, "reason": "no test run yet"}`),    // judge: iter 1

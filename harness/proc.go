@@ -483,7 +483,7 @@ func (m *procManager) doBash(ctx context.Context, command string) (string, bool)
 }
 
 // foregroundOutput returns a finished foreground command's whole cleaned
-// output, capped like the old bash tool.
+// output, capped to maxBashOutput.
 func (m *procManager) foregroundOutput(p *Proc) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
