@@ -46,8 +46,7 @@ func renderStatus(info statusInfo) string {
 			return line
 		}
 	}
-	// No active brain: say so plainly instead of advertising a default model the
-	// user never configured (the banner and footer must agree on a fresh run).
+	// No active brain: report it so the banner and footer agree.
 	if info.NoProvider {
 		return fmt.Sprintf("no provider · session %s · run /provider add", info.Session)
 	}

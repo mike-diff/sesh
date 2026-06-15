@@ -78,7 +78,7 @@ func TestKTokens(t *testing.T) {
 
 // TestRenderStatusNoProvider: with no active provider, the status line says so
 // and never names a resolved-default brain. Breaker: drop the NoProvider branch
-// and it falls through to the phantom "anthropic · claude-opus-4-8" render.
+// and it falls through to rendering the resolved default as the active brain.
 func TestRenderStatusNoProvider(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	chtmp(t)

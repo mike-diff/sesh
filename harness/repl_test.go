@@ -598,8 +598,8 @@ func TestLastResponseBlock(t *testing.T) {
 }
 
 // TestStatusTextNoProvider: with no live provider, the status line reports it
-// rather than the resolved-default brain. Breaker: drop the r.p==nil branch in
-// statusText and it renders the phantom model again (the issue #13 regression).
+// rather than the resolved-default brain. Breaker: drop the r.p==nil branch and
+// statusText renders the resolved-default model as if it were active.
 func TestStatusTextNoProvider(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	chtmp(t)
