@@ -12,9 +12,11 @@ import (
 // hooks (or none) is all that separates interactive from print/JSON modes.
 // ---------------------------------------------------------------------------
 
-// renderHooks streams text, dims reasoning (when showThink allows it), and
-// shows tool I/O.
-func renderHooks(g func(agent.ToolCall) error, showThink *bool) agent.Hooks {
+// renderHooks streams text through the markdown renderer, dims reasoning (when
+// showThink allows it), and shows tool I/O. md holds the streamed assistant
+// line until it completes, so any pending line is flushed before reasoning or
+// tool output breaks in.
+func renderHooks(g func(agent.ToolCall) error, showThink *bool, md *mdRenderer) agent.Hooks {
 	thinking := false
 	flushThinking := func() {
 		if thinking {
@@ -23,15 +25,17 @@ func renderHooks(g func(agent.ToolCall) error, showThink *bool) agent.Hooks {
 		}
 	}
 	return agent.Hooks{
-		OnText: func(s string) { flushThinking(); emit("%s", s) },
+		OnText: func(s string) { flushThinking(); md.write(s) },
 		OnThink: func(s string) {
 			if showThink != nil && !*showThink {
 				return
 			}
+			md.flush()
 			thinking = true
 			emit("%s", dim+s+reset)
 		},
 		OnToolStart: func(c agent.ToolCall) {
+			md.flush()
 			flushThinking()
 			emit("%s  > %s %s%s\n", dim, c.Name, compact(string(c.Args)), reset)
 		},

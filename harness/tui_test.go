@@ -8,9 +8,9 @@ import (
 
 func TestStripANSI(t *testing.T) {
 	cases := map[string]string{
-		"plain":                        "plain",
-		yellow + "  approve? " + reset: "  approve? ",
-		"\033[2K\033[5;1Htext":         "text",
+		"plain":                      "plain",
+		"\033[33m  approve? \033[0m": "  approve? ",
+		"\033[2K\033[5;1Htext":       "text",
 	}
 	for in, want := range cases {
 		if got := stripANSI(in); got != want {

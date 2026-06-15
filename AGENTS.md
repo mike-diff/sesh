@@ -37,7 +37,9 @@ refuses to own policy. So the code splits along exactly that line:
   primitive, handoff inheritance, port-conflict detection), `procfs.go` (the
   Linux /proc reading it needs), `search.go` (the shaped search),
   `editmatch.go` (the hardened edit), `diff.go` (the applied diff),
-  `gates.go` (oversight policies), `render.go` (output hooks), `repl.go`
+  `gates.go` (oversight policies), `render.go` (output hooks), `markdown.go`
+  (terminal markdown styling for streamed output, behind an overridable theme),
+  `repl.go`
   (commands and their state), `drive.go` (goal persistence, the judge),
   `continuity.go` (handoff chains, recall), `subagent.go` (task), `tui.go`
   (the console seam), `brains.go` (provider selection), `install.go` and

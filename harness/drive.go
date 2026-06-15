@@ -213,6 +213,9 @@ func drive(r *repl, cfg driveConfig, firstTurns []agent.Turn) int {
 		ctx, done := turnCtx()
 		out, spent, err := agent.Run(ctx, r.p, r.system, r.history, cfg.tools, iterHooks)
 		done()
+		if r.md.flush() { // close the iteration's trailing line before its summary
+			emit("\n")
+		}
 		if err != nil {
 			// Roll back the unconsumed opening (consecutive user turns would
 			// poison the next call).

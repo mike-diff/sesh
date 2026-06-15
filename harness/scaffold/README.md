@@ -9,6 +9,7 @@ the global mod mount point; a project's `.sesh/` overrides it per file.
     APPEND_SYSTEM.md   append to the system prompt instead of replacing it
     tuning.json        behavioral dials; state only what you change
                        (takes // comments; see tuning.json.example)
+    theme.json         colors for rendered markdown output (see Theme below)
     prompts/           override the model-facing templates (see its README)
     tools/             executables that become agent tools (see its README)
     statusline         executable: owns the footer status line
@@ -26,3 +27,24 @@ sesh's own read/search tools refuse this directory (credentials live here);
 bash can reach it, which is the documented trust boundary. Each mount here
 has its own short README or .example; the project lives at
 https://github.com/mike-diff/sesh
+
+## Theme
+
+`theme.json` recolors the markdown sesh renders as it streams the model's
+replies. State only the roles you want to change; the rest keep their built-in
+colors:
+
+    {
+      "heading": "#7aa2f7",
+      "code":    "#9ece6a",
+      "muted":   "#565f89",
+      "accent":  "#bb9af7"
+    }
+
+The roles: `heading` (rendered bold as well), `code` (inline spans and fenced
+blocks, both uniform), `muted` (blockquotes and horizontal rules), `accent`
+(list bullets). Values are `#rrggbb`; 24-bit color degrades to the 256-color
+palette on terminals that lack truecolor. A project `.sesh/theme.json` overrides
+the global one role by role. Color is suppressed entirely when output is piped,
+`NO_COLOR` is set to a non-empty value, or `TERM` is `dumb`. The theme is read
+once at startup, so restart sesh to see a change.
