@@ -444,3 +444,59 @@ func TestAnnotatePortConflict(t *testing.T) {
 		t.Fatalf("conflict note must name the foreign holder: %q", out)
 	}
 }
+
+// TestLogdigestMod: the shipped logdigest tool mod answers --schema with valid
+// JSON and digests a process log via SESH_SESSION (collapse repeats, surface
+// errors). Breaker: a broken --schema, the wrong run-dir path, or losing the
+// repeat-collapse.
+func TestLogdigestMod(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	b, err := scaffoldFS.ReadFile("scaffold/tools-logdigest.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(home, "logdigest")
+	if err := os.WriteFile(bin, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := exec.Command(bin, "--schema").Output()
+	if err != nil {
+		t.Fatalf("--schema failed: %v", err)
+	}
+	var s struct {
+		Description string          `json:"description"`
+		Parameters  json.RawMessage `json:"parameters"`
+	}
+	if json.Unmarshal(out, &s) != nil || s.Description == "" || len(s.Parameters) == 0 {
+		t.Fatalf("--schema must be valid JSON with a description and parameters: %s", out)
+	}
+
+	sid := "sess-x"
+	os.MkdirAll(filepath.Join(home, ".sesh", "run", sid), 0o755)
+	logf := filepath.Join(home, ".sesh", "run", sid, "proc-1.log")
+	os.WriteFile(logf, []byte("starting\nrepeat\nrepeat\nrepeat\nError: boom\nready\n"), 0o644)
+
+	cmd := exec.Command(bin)
+	cmd.Stdin = strings.NewReader(`{"id":"proc-1"}`)
+	cmd.Env = append(os.Environ(), "SESH_SESSION="+sid)
+	out, err = cmd.Output()
+	if err != nil {
+		t.Fatalf("run: %v (%s)", err, out)
+	}
+	got := string(out)
+	if !strings.Contains(got, "(x3) repeat") {
+		t.Fatalf("must collapse repeated lines: %q", got)
+	}
+	if !strings.Contains(got, "errors (count") || !strings.Contains(got, "Error: boom") {
+		t.Fatalf("must surface an errors section: %q", got)
+	}
+
+	cmd = exec.Command(bin)
+	cmd.Stdin = strings.NewReader(`{}`)
+	cmd.Env = append(os.Environ(), "SESH_SESSION="+sid)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("a missing id must be an error")
+	}
+}

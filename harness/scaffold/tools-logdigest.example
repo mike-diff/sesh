@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# logdigest: a compact digest of a background process's log, for the agent.
+#
+# This is the user-space "log engine" that layers over sesh's core read
+# primitive. It pairs with the proc tool: given a process id (proc-1, proc-2,
+# ...), it reads that process's log, collapses repeated lines, surfaces
+# error-shaped lines, and tails. On a chatty dev server that is far fewer
+# tokens than raw `proc logs`. Edit it freely; the heuristics are yours.
+#
+# Activate: drop the .example suffix and make it executable:
+#     mv logdigest.example logdigest && chmod +x logdigest
+#
+# sesh exports SESH_SESSION (the active session id) so this mod can find the
+# logs under ~/.sesh/run/<session>/<id>.log. Background-process logs need the
+# proc_spill dial on (it is, by default).
+set -u
+
+if [ "${1:-}" = "--schema" ]; then
+  cat <<'JSON'
+{
+  "description": "Summarize a background process's log instead of reading it raw: repeated lines collapse to (xN), error-shaped lines are surfaced, and the tail is kept. Pass the process id from the proc tool (e.g. proc-1). Much cheaper than proc logs on a chatty server.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "id": {"type": "string", "description": "The process id, e.g. proc-1."},
+      "tail": {"type": "integer", "description": "Lines of tail to keep (default 80)."}
+    },
+    "required": ["id"]
+  },
+  "parallel": true
+}
+JSON
+  exit 0
+fi
+
+args="$(cat)"
+id="$(printf '%s' "$args" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+tail_n="$(printf '%s' "$args" | sed -n 's/.*"tail"[[:space:]]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p')"
+[ -n "$tail_n" ] || tail_n=80
+if [ -z "$id" ]; then
+  echo 'logdigest needs an id, e.g. {"id":"proc-1"}' >&2
+  exit 1
+fi
+
+log="$HOME/.sesh/run/${SESH_SESSION:-}/$id.log"
+if [ ! -f "$log" ]; then
+  echo "no log file for $id (it must be a background process; see the proc tool, and keep proc_spill on)" >&2
+  exit 1
+fi
+
+total="$(wc -l < "$log" | tr -d ' ')"
+errs="$(grep -iE 'error|panic|fatal|exception|traceback' "$log" | sed 's/^[[:space:]]*//' | sort | uniq -c | sort -rn | head -10 || true)"
+body="$(tail -n "$tail_n" "$log" | awk '
+  function emit() { if (n > 1) printf "(x%d) %s\n", n, prev; else print prev }
+  { if (NR > 1 && $0 == prev) { n++ } else { if (NR > 1) emit(); prev = $0; n = 1 } }
+  END { if (NR > 0) emit() }
+')"
+
+echo "digest of $id: $total lines total, last $tail_n shown"
+[ -n "$errs" ] && printf '\nerrors (count x line):\n%s\n' "$errs"
+printf '\ntail:\n%s\n' "$body"
