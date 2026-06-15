@@ -211,8 +211,7 @@ func verbatimTail(turns []agent.Turn, budgetTokens int) []agent.Turn {
 // The chain ledger file: one append-only JSONL per chain. Append is O(1) and
 // crash-safe (a torn final line drops one record, not the file); a chain with
 // thousands of handoffs stays cheap because sessions carry only the most
-// recent entries and the file carries them all. pi, Claude Code, and Codex
-// all converged on JSONL for exactly this property.
+// recent entries and the file carries them all.
 // ---------------------------------------------------------------------------
 
 // chainRecord is one handoff, as appended to the chain file.
