@@ -16,7 +16,7 @@ import (
 // showThink allows it), and shows tool I/O. md holds the streamed assistant
 // line until it completes, so any pending line is flushed before reasoning or
 // tool output breaks in.
-func renderHooks(g func(agent.ToolCall) error, showThink *bool, md *mdRenderer) agent.Hooks {
+func renderHooks(g func(agent.ToolCall) error, showThink *bool, md *mdRenderer, onUsage func(agent.Usage)) agent.Hooks {
 	thinking := false
 	flushThinking := func() {
 		if thinking {
@@ -53,7 +53,8 @@ func renderHooks(g func(agent.ToolCall) error, showThink *bool, md *mdRenderer) 
 				emitDiffLines(r.Content)
 			}
 		},
-		Gate: g,
+		OnUsage: onUsage,
+		Gate:    g,
 	}
 }
 
