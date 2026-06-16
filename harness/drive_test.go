@@ -69,6 +69,48 @@ func counting() (bump func(), count func() int) {
 	return func() { n++ }, func() int { return n }
 }
 
+// TestLiveAccountingNoDoubleCount: the live tally shows a turn's spend as each
+// round-trip lands, and account commits the same aggregate exactly once,
+// zeroing the live tally so the committed total is not double counted. Breaker:
+// drop the live-reset in account and the committed total ends up doubled (via
+// statusText's tot+live).
+func TestLiveAccountingNoDoubleCount(t *testing.T) {
+	r := newTestRepl(t)
+	r.accountLive(agent.Usage{Input: 100, Output: 20, CacheRead: 5, LastInput: 105})
+	r.accountLive(agent.Usage{Input: 200, Output: 30, CacheRead: 50, LastInput: 250})
+	if r.totIn != 0 || r.totOut != 0 {
+		t.Fatalf("live spend must not touch committed totals: in=%d out=%d", r.totIn, r.totOut)
+	}
+	if r.liveIn != 300 || r.liveOut != 50 {
+		t.Fatalf("live tally wrong: in=%d out=%d", r.liveIn, r.liveOut)
+	}
+	if r.ctxTokens != 250 {
+		t.Fatalf("ctx gauge must track the latest round-trip: %d", r.ctxTokens)
+	}
+	r.account(agent.Usage{Input: 300, Output: 50, CacheRead: 55, LastInput: 250})
+	if r.totIn != 300 || r.totOut != 50 || r.totCache != 55 {
+		t.Fatalf("commit wrong: in=%d out=%d cache=%d", r.totIn, r.totOut, r.totCache)
+	}
+	if r.liveIn != 0 || r.liveOut != 0 || r.liveCache != 0 {
+		t.Fatalf("commit must zero the live tally: in=%d out=%d cache=%d", r.liveIn, r.liveOut, r.liveCache)
+	}
+}
+
+// TestAccountChildFoldsToCommitted: a subagent's spend lands in the committed
+// totals and never moves the context gauge (its prompt is not the session's).
+// Breaker: route child spend into the live tally, or let it move ctxTokens.
+func TestAccountChildFoldsToCommitted(t *testing.T) {
+	r := newTestRepl(t)
+	r.ctxTokens = 4242
+	r.accountChild(agent.Usage{Input: 70, Output: 9, CacheRead: 3, LastInput: 999})
+	if r.totIn != 70 || r.totOut != 9 || r.totCache != 3 {
+		t.Fatalf("child spend must fold into committed totals: in=%d out=%d cache=%d", r.totIn, r.totOut, r.totCache)
+	}
+	if r.liveIn != 0 || r.ctxTokens != 4242 {
+		t.Fatalf("child spend must not touch the live tally or the gauge: live=%d ctx=%d", r.liveIn, r.ctxTokens)
+	}
+}
+
 func TestWorkedOn(t *testing.T) {
 	if !workedOn(workTurns()) {
 		t.Fatal("tool activity is work")

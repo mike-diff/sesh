@@ -93,6 +93,7 @@ type Hooks struct {
 	OnThink     func(string)               // reasoning deltas (display-only)
 	OnToolStart func(ToolCall)             // a tool call is about to run
 	OnToolEnd   func(ToolCall, ToolResult) // a tool call finished
+	OnUsage     func(Usage)                // one model round-trip's usage, as it lands
 	// Gate decides whether a tool call may run. A non-nil error declines it
 	// and the error text is returned to the model as the tool result, so
 	// word it as something the model can act on. Nil Gate allows everything.
@@ -112,6 +113,9 @@ func (h Hooks) withDefaults() Hooks {
 	}
 	if h.OnToolEnd == nil {
 		h.OnToolEnd = func(ToolCall, ToolResult) {}
+	}
+	if h.OnUsage == nil {
+		h.OnUsage = func(Usage) {}
 	}
 	if h.Gate == nil {
 		h.Gate = func(ToolCall) error { return nil }
@@ -215,6 +219,9 @@ func Run(ctx context.Context, p Provider, system string, history []Turn, tools [
 		}
 		spent = spent.Add(reply.Usage)
 		spent.LastInput = reply.Usage.Input + reply.Usage.CacheRead
+		u := reply.Usage
+		u.LastInput = spent.LastInput
+		h.OnUsage(u) // per round-trip, so the caller can update totals mid-turn
 		history = append(history, Turn{Role: "assistant", Text: reply.Text, Calls: reply.Calls})
 
 		if len(reply.Calls) == 0 {

@@ -74,6 +74,32 @@ func TestRunLoop(t *testing.T) {
 	}
 }
 
+// TestOnUsageFiresPerCall: OnUsage reports each model round-trip's usage as it
+// lands, with LastInput set to that call's prompt size, not just the turn total.
+// Breaker: move the OnUsage call out of the loop (fire once) and only one record
+// arrives.
+func TestOnUsageFiresPerCall(t *testing.T) {
+	tools := []Tool{tool("touch", func(json.RawMessage) (string, bool) { return "ok", false })}
+	p := &scripted{replies: []Reply{
+		{Calls: []ToolCall{{ID: "1", Name: "touch", Args: json.RawMessage(`{}`)}}, Usage: Usage{Input: 100, Output: 20, CacheRead: 5}},
+		{Text: "done", Usage: Usage{Input: 200, Output: 30, CacheRead: 50}},
+	}}
+	var got []Usage
+	h := Hooks{OnUsage: func(u Usage) { got = append(got, u) }}
+	if _, _, err := Run(context.Background(), p, "sys", []Turn{{Role: "user", Text: "go"}}, tools, h); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("OnUsage must fire once per round-trip, got %d", len(got))
+	}
+	if want := (Usage{Input: 100, Output: 20, CacheRead: 5, LastInput: 105}); got[0] != want {
+		t.Fatalf("first call: %+v, want %+v", got[0], want)
+	}
+	if want := (Usage{Input: 200, Output: 30, CacheRead: 50, LastInput: 250}); got[1] != want {
+		t.Fatalf("second call: %+v, want %+v", got[1], want)
+	}
+}
+
 // TestGateDenies: a non-nil Gate blocks the tool, its error reaches the model
 // as the result, and the tool body never runs.
 func TestGateDenies(t *testing.T) {

@@ -49,10 +49,15 @@ type repl struct {
 	switched    bool // brain changed mid-conversation: noted in the identity block
 	ask         bool // -ask is active: carried across a /update reload
 	unsafePaths bool // -unsafe-paths is active: carried across a /update reload
-	// running totals for the status line
-	turns                   int
-	totIn, totOut, totCache int
-	ctxTokens               int // the last call's full prompt size = current context
+	// running totals for the status line. acctMu guards them: the committed
+	// totals, the in-progress turn's live tally, and the context gauge are read
+	// by statusText and written from the worker turn (OnUsage), the judge, and
+	// concurrent subagents.
+	acctMu                     sync.Mutex
+	turns                      int
+	totIn, totOut, totCache    int
+	liveIn, liveOut, liveCache int // the in-progress turn's usage, shown until account commits it
+	ctxTokens                  int // the last call's full prompt size = current context
 	// spinBase is the status line the working-time spinner decorates. It is
 	// refreshed whenever the totals change (including between drive iterations)
 	// so a long worked turn shows the tokens climbing, not a frozen base.
@@ -66,22 +71,57 @@ type repl struct {
 // turn's later iterations are real spend and must reach the status line, not
 // just the first sub-turn.
 func (r *repl) account(spent agent.Usage) {
+	r.acctMu.Lock()
 	r.totIn += spent.Input
 	r.totOut += spent.Output
 	r.totCache += spent.CacheRead
 	if spent.LastInput > 0 {
 		r.ctxTokens = spent.LastInput
 	}
+	// The live tally was the same spend shown provisionally during the turn;
+	// the commit above supersedes it, so clear it to avoid double counting.
+	r.liveIn, r.liveOut, r.liveCache = 0, 0, 0
+	r.acctMu.Unlock()
 	r.setSpinBase()
+}
+
+// accountLive shows one model round-trip's spend the moment it lands, before the
+// turn's aggregate is committed by account. It feeds a separate live tally
+// (added to the committed totals only for display) and moves the context gauge,
+// so the status line climbs as a multi-call turn works instead of jumping at the
+// end. account zeroes the tally when it commits the same spend for real.
+func (r *repl) accountLive(u agent.Usage) {
+	r.acctMu.Lock()
+	r.liveIn += u.Input
+	r.liveOut += u.Output
+	r.liveCache += u.CacheRead
+	if u.LastInput > 0 {
+		r.ctxTokens = u.LastInput
+	}
+	r.acctMu.Unlock()
+	r.setSpinBase()
+}
+
+// accountChild folds a subagent's spend into the committed totals. Subagents run
+// concurrently with the worker turn, so this shares acctMu with the rest; it
+// leaves the context gauge alone (a child's prompt is not the session's).
+func (r *repl) accountChild(u agent.Usage) {
+	r.acctMu.Lock()
+	r.totIn += u.Input
+	r.totOut += u.Output
+	r.totCache += u.CacheRead
+	r.acctMu.Unlock()
 }
 
 // accountAux folds an auxiliary call's spend (the judge, mainly) into the
 // totals without moving the context gauge: that call is real tokens, but its
 // prompt is a side conversation, not the session's current context.
 func (r *repl) accountAux(spent agent.Usage) {
+	r.acctMu.Lock()
 	r.totIn += spent.Input
 	r.totOut += spent.Output
 	r.totCache += spent.CacheRead
+	r.acctMu.Unlock()
 	r.setSpinBase()
 }
 
@@ -105,11 +145,16 @@ func (r *repl) statusText() string {
 	if r.p == nil {
 		return renderStatus(statusInfo{Session: r.sess.ID, Cwd: cwd, NoProvider: true})
 	}
+	// Committed totals plus the in-progress turn's live tally, snapshotted
+	// together so a concurrent subagent or round-trip can't tear the read.
+	r.acctMu.Lock()
+	in, out, cache, ctx := r.totIn+r.liveIn, r.totOut+r.liveOut, r.totCache+r.liveCache, r.ctxTokens
+	r.acctMu.Unlock()
 	return renderStatus(statusInfo{
 		Provider: r.current, Model: r.model, Protocol: r.protocol,
 		Session: r.sess.ID, Turns: r.turns,
-		InputTokens: r.totIn, OutputTokens: r.totOut, CacheRead: r.totCache,
-		ContextTokens: r.ctxTokens, ContextLimit: r.ctxLimit,
+		InputTokens: in, OutputTokens: out, CacheRead: cache,
+		ContextTokens: ctx, ContextLimit: r.ctxLimit,
 		Cwd: cwd,
 	})
 }

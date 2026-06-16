@@ -350,21 +350,15 @@ func Main() {
 	}
 	mutCount := func() int { mutMu.Lock(); defer mutMu.Unlock(); return mutations }
 	r.md = newMarkdown(func(s string) { emit("%s", s) })
-	hooks := renderHooks(g, &r.showThink, r.md)
+	// OnUsage feeds the live tally so the status line climbs each round-trip,
+	// not just when the turn ends; account commits the aggregate at turn end.
+	hooks := renderHooks(g, &r.showThink, r.md, r.accountLive)
 	// The task tool closes over the live repl: a /provider or /model switch
 	// applies to later spawns, and child token usage lands in the totals
-	// (mutex because parallel children report concurrently).
-	var usageMu sync.Mutex
+	// (accountChild shares acctMu because parallel children report concurrently).
 	sessOf := func() *Session { return r.sess }
 	tools = append(tools,
-		taskTool(func() agent.Provider { return r.p }, sessOf, 1, *unsafePaths, g,
-			func(u agent.Usage) {
-				usageMu.Lock()
-				defer usageMu.Unlock()
-				r.totIn += u.Input
-				r.totOut += u.Output
-				r.totCache += u.CacheRead
-			}),
+		taskTool(func() agent.Provider { return r.p }, sessOf, 1, *unsafePaths, g, r.accountChild),
 		recallTool(sessOf))
 	// The TUI completes commands, provider names, and model ids on tab, and
 	// reaps owned processes if a signal tears the session down.
