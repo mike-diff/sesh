@@ -775,7 +775,15 @@ func (t *tuiConsole) readLine(prompt string, mask bool) (string, error) {
 			t.endInput("")
 			t.mu.Unlock()
 			return "", err
-		case r == '\r': // Enter submits; Shift+Enter and Ctrl-J insert newlines
+		case r == '\r': // Enter submits; Shift+Enter, Ctrl-J, and \+Enter newline
+			if !mask && t.pos > 0 && t.buf[t.pos-1] == '\\' {
+				// \ + Enter: a universal newline for terminals (tmux, Apple
+				// Terminal, VTE without extended keys) that cannot tell
+				// Shift+Enter from Enter at the byte level. The backslash is
+				// consumed, bash-continuation style.
+				t.buf[t.pos-1] = '\n'
+				break
+			}
 			segs := t.segments()
 			var shown strings.Builder
 			for _, s := range segs {
@@ -851,7 +859,8 @@ func (t *tuiConsole) expandSnippets() string {
 
 // handleEscape reads one escape sequence and applies its editing action:
 // arrows move the cursor or walk history, home/end/delete edit, Shift+Enter
-// (CSI 13;2u, Kitty disambiguation) inserts a newline, and a bracketed-paste
+// inserts a newline (CSI 13;2u from the Kitty disambiguation flag, or CSI
+// 27;2;13~ from terminals/tmux in extended-keys mode), and a bracketed-paste
 // begin marker pulls the whole paste into the buffer.
 func (t *tuiConsole) handleEscape() {
 	params, final, ok := t.readCSI()
@@ -868,7 +877,8 @@ func (t *tuiConsole) handleEscape() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	switch {
-	case final == 'u' && (params == "13;2" || params == "13;3"): // shift/alt+enter
+	case (final == 'u' && (params == "13;2" || params == "13;3")) || // kitty: shift/alt+enter
+		(final == '~' && (params == "27;2;13" || params == "27;3;13")): // extended keys: tmux/xterm
 		t.insertLocked('\n')
 	case final == 'A': // up: move a visual row, else walk history at the top
 		if !t.cursorUpLocked() {

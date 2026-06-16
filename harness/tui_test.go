@@ -2,6 +2,7 @@ package harness
 
 import (
 	"bufio"
+	"os"
 	"strings"
 	"testing"
 )
@@ -132,14 +133,35 @@ func TestCursorVerticalNav(t *testing.T) {
 	}
 }
 
-// TestEditorMultilineSubmit drives the real editor headless: Ctrl-J inserts a
-// newline and the submitted message keeps it, so a multi-line prompt survives
-// the keystroke loop and the redraw. Breaker: map Ctrl-J to submit and the line
-// loses everything after the break.
-func TestEditorMultilineSubmit(t *testing.T) {
-	line, _ := driveKeys(t, nil, "ab\ncd\r")
-	if line != "ab\ncd" {
-		t.Fatalf("multi-line submit = %q, want %q", line, "ab\ncd")
+// TestEditorNewlineKeys drives the real editor headless and asserts that every
+// way to insert a newline lands the same multi-line message, across the terminal
+// encodings sesh must accept. Each row exercises a distinct decode path and
+// breaks on its own one-line change (drop the \+Enter branch; drop a CSI match).
+func TestEditorNewlineKeys(t *testing.T) {
+	for _, c := range []struct{ name, keys string }{
+		{"ctrl-j", "ab\ncd\r"},                          // \n: any terminal
+		{"backslash-enter", "ab\\\rcd\r"},               // \ + Enter: universal fallback
+		{"kitty shift+enter", "ab\033[13;2ucd\r"},       // CSI 13;2u
+		{"extended shift+enter", "ab\033[27;2;13~cd\r"}, // CSI 27;2;13~ (tmux/xterm)
+	} {
+		if line, _ := driveKeys(t, nil, c.keys); line != "ab\ncd" {
+			t.Fatalf("%s: line = %q, want %q", c.name, line, "ab\ncd")
+		}
+	}
+}
+
+// TestEditorSecretSubmitsOnBackslashEnter: in a masked prompt Enter always
+// submits, even after a backslash, so \+Enter never traps a password behind a
+// newline. Breaker: drop the !mask guard on the \+Enter branch.
+func TestEditorSecretSubmitsOnBackslashEnter(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "tui-out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tc := &tuiConsole{out: f, in: bufio.NewReader(strings.NewReader("pw\\\r")), cols: 80}
+	if line, _ := tc.readLine("pw> ", true); line != "pw\\" {
+		t.Fatalf("masked \\+Enter must submit: line = %q, want %q", line, "pw\\")
 	}
 }
 
