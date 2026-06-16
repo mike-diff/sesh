@@ -165,6 +165,34 @@ func TestEditorSecretSubmitsOnBackslashEnter(t *testing.T) {
 	}
 }
 
+// TestAttendTurnQueuesAndCancels: while a turn runs, the live editor queues a
+// typed message on Enter (instead of submitting) and cancels the turn on a bare
+// Escape. Breaker: drop the turn-mode Enter branch and "fix it" is never queued;
+// drop the bare-Escape branch and cancel is never called.
+func TestAttendTurnQueuesAndCancels(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "tui-out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tc := &tuiConsole{out: f, in: bufio.NewReader(strings.NewReader("fix it\r\x1b")), cols: 80}
+	var queued []string
+	canceled := false
+	if err := tc.attendTurn(turnAttend{
+		done:   make(chan struct{}), // never closes; the script's EOF ends attend
+		cancel: func() { canceled = true },
+		queue:  func(s string) { queued = append(queued, s) },
+	}); err != errTurnOver {
+		t.Fatalf("attendTurn err = %v, want errTurnOver", err)
+	}
+	if len(queued) != 1 || queued[0] != "fix it" {
+		t.Fatalf("Enter must queue the message, got %v", queued)
+	}
+	if !canceled {
+		t.Fatal("bare Escape must cancel the turn")
+	}
+}
+
 // TestInputCapClampsToTerminal: the editor height honors the dial but never
 // grows past what the terminal can hold under the dividers and status. Breaker:
 // drop the t.rows-reserve clamp and a 7-row terminal returns 6.

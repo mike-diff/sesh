@@ -192,13 +192,23 @@ type tuiConsole struct {
 	histPath  string
 	completer func(line string) []string
 	mention   *mentions // recognizes/completes/highlights #skill and @file tokens; nil disables
+
+	// runes is the single decoded-keystroke stream: one pump goroutine owns the
+	// real stdin and feeds this channel, so reads become selectable. That is what
+	// lets the editor stay live during a turn (select on a key or the turn's
+	// end) instead of freezing while the model works. ungot is a tiny pushback
+	// for lookahead (bare-Escape detection). Both are touched only by whichever
+	// consumer is currently reading; the pump only ever sends.
+	runes chan rune
+	ungot []rune
 }
 
 func newTUI() (*tuiConsole, error) {
-	t := &tuiConsole{out: os.Stdout, in: bufio.NewReader(os.Stdin), maxInputRows: 6}
+	t := &tuiConsole{out: os.Stdout, in: bufio.NewReader(os.Stdin), maxInputRows: 6, runes: make(chan rune, 1024)}
 	if err := t.measure(); err != nil {
 		return nil, err
 	}
+	go t.pump()
 	// cbreak: keys arrive immediately and unechoed; output processing stays
 	// on. -icrnl keeps Enter (\r) distinct from Ctrl-J (\n): with the default
 	// mapping both arrive as \n and submit-vs-newline cannot be told apart.
@@ -757,24 +767,136 @@ func (t *tuiConsole) endInput(echo string) {
 	t.drawFooterLocked()
 }
 
+// noteQueuedLocked drops a dim transcript line confirming a typed message was
+// queued to steer the running turn, so the user sees it was captured rather than
+// dropped. Caller holds the mutex.
+func (t *tuiConsole) noteQueuedLocked(msg string) {
+	if r := []rune(msg); len(r) > 60 {
+		msg = string(r[:60]) + "..."
+	}
+	t.removeFooterLocked()
+	t.writeLocked(fmt.Sprintf("%s  queued, will steer at the next step: %s%s\n", dim, msg, reset))
+	t.drawFooterLocked()
+}
+
+// pump is the one goroutine that reads the real terminal. Every keystroke
+// becomes a rune on t.runes, so all other reads select on a channel and the
+// editor can stay live during a turn. It runs for the life of the console;
+// EOF closes the channel, which every consumer reads as end of input.
+func (t *tuiConsole) pump() {
+	for {
+		r, _, err := t.in.ReadRune()
+		if err != nil {
+			close(t.runes)
+			return
+		}
+		t.runes <- r
+	}
+}
+
+// nextRune returns the next keystroke, or ok=false at end of input. ungot is a
+// one-deep lookahead used by bare-Escape detection. Only the active consumer
+// (always the main goroutine) calls this, so no lock is needed.
+func (t *tuiConsole) nextRune() (rune, bool) {
+	if n := len(t.ungot); n > 0 {
+		r := t.ungot[n-1]
+		t.ungot = t.ungot[:n-1]
+		return r, true
+	}
+	r, ok := <-t.runes
+	return r, ok
+}
+
+func (t *tuiConsole) unget(r rune) { t.ungot = append(t.ungot, r) }
+
+// nextKey is the editor's read: like nextRune, but when done is non-nil it also
+// returns the moment the turn ends (over=true), so the live editor stops
+// attending without consuming a keystroke meant for the next prompt.
+func (t *tuiConsole) nextKey(done <-chan struct{}) (r rune, over, eof bool) {
+	if n := len(t.ungot); n > 0 {
+		r = t.ungot[n-1]
+		t.ungot = t.ungot[:n-1]
+		return r, false, false
+	}
+	if done == nil {
+		r, ok := <-t.runes
+		return r, false, !ok
+	}
+	select {
+	case r, ok := <-t.runes:
+		return r, false, !ok
+	case <-done:
+		return 0, true, false
+	}
+}
+
+// turnAttend wires the live editor to a running turn: done closes when the turn
+// finishes, cancel aborts it (Escape), and queue stashes a typed message to
+// steer the agent at the next iteration boundary.
+type turnAttend struct {
+	done   <-chan struct{}
+	cancel func()
+	queue  func(string)
+}
+
+// errTurnOver ends a live-editor attend when the turn finishes on its own.
+var errTurnOver = fmt.Errorf("turn over")
+
 func (t *tuiConsole) ReadLine(prompt string) (string, error) {
-	return t.readLine(prompt, false)
+	return t.readLineMode(prompt, false, nil)
 }
 
 func (t *tuiConsole) ReadSecret(prompt string) (string, error) {
-	return t.readLine(prompt, true)
+	return t.readLineMode(prompt, true, nil)
 }
 
+// attendTurn runs the editor live while a turn works: typing edits as usual,
+// Escape cancels the turn, and Enter queues the message to steer. It returns
+// when the turn ends (errTurnOver) or on EOF.
+func (t *tuiConsole) attendTurn(ta turnAttend) error {
+	_, err := t.readLineMode("-> ", false, &ta)
+	return err
+}
+
+// readLineMode runs the line editor. With turn == nil it is the normal
+// between-turns prompt. With turn set it attends a running turn: it reads keys
+// the same way but Escape cancels the turn, Enter queues the typed text to steer
+// instead of submitting, and it returns errTurnOver the instant the turn ends.
 func (t *tuiConsole) readLine(prompt string, mask bool) (string, error) {
+	return t.readLineMode(prompt, mask, nil)
+}
+
+func (t *tuiConsole) readLineMode(prompt string, mask bool, turn *turnAttend) (string, error) {
+	if t.runes == nil { // a test-built console has no pump yet; the real one starts it in newTUI
+		t.runes = make(chan rune, 1024)
+		go t.pump()
+	}
 	t.beginInput(prompt, mask)
+	var done <-chan struct{}
+	if turn != nil {
+		done = turn.done
+	}
 	for {
-		r, _, err := t.in.ReadRune()
+		r, over, eof := t.nextKey(done)
+		if over {
+			return "", errTurnOver // the turn finished; stop attending
+		}
 		t.mu.Lock()
 		switch {
-		case err != nil:
+		case eof:
+			if turn != nil { // Ctrl-D / EOF must not end the session mid-turn
+				t.mu.Unlock()
+				return "", errTurnOver
+			}
 			t.endInput("")
 			t.mu.Unlock()
-			return "", err
+			return "", io.EOF
+		case r == '\r' && turn != nil: // Enter while working: queue the message, keep editing
+			if line := strings.TrimSpace(t.expandSnippets()); line != "" {
+				turn.queue(line)
+				t.noteQueuedLocked(line)
+				t.buf, t.pos, t.snippets = nil, 0, nil
+			}
 		case r == '\r': // Enter submits; Shift+Enter, Ctrl-J, and \+Enter newline
 			if !mask && t.pos > 0 && t.buf[t.pos-1] == '\\' {
 				// \ + Enter: a universal newline for terminals (tmux, Apple
@@ -798,8 +920,8 @@ func (t *tuiConsole) readLine(prompt string, mask bool) (string, error) {
 			return line, nil
 		case r == '\n': // Ctrl-J: newline everywhere, no protocol needed
 			t.insertLocked('\n')
-		case r == 0x04: // Ctrl-D on an empty line ends the session
-			if len(t.buf) == 0 {
+		case r == 0x04: // Ctrl-D on an empty line ends the session (not mid-turn)
+			if turn == nil && len(t.buf) == 0 {
 				t.endInput("")
 				t.mu.Unlock()
 				return "", io.EOF
@@ -826,7 +948,11 @@ func (t *tuiConsole) readLine(prompt string, mask bool) (string, error) {
 			t.insertLocked(' ')
 		case r == 0x1b:
 			t.mu.Unlock()
-			t.handleEscape()
+			if turn != nil && t.escIsBare() { // bare Escape cancels the running turn
+				turn.cancel()
+			} else {
+				t.handleEscape()
+			}
 			t.mu.Lock()
 		case r >= 0x20: // printable, unicode included via ReadRune
 			t.insertLocked(r)
@@ -943,14 +1069,14 @@ func (t *tuiConsole) insertPasteLocked(content []rune) {
 // returning its parameter bytes and final byte. ok=false for a bare escape
 // or read error; unknown sequences still return so callers can ignore them.
 func (t *tuiConsole) readCSI() (params string, final rune, ok bool) {
-	r, _, err := t.in.ReadRune()
-	if err != nil || (r != '[' && r != 'O') {
+	r, more := t.nextRune()
+	if !more || (r != '[' && r != 'O') {
 		return "", 0, false
 	}
 	var p []rune
 	for {
-		c, _, err := t.in.ReadRune()
-		if err != nil {
+		c, more := t.nextRune()
+		if !more {
 			return "", 0, false
 		}
 		if c >= '@' && c <= '~' {
@@ -965,8 +1091,8 @@ func (t *tuiConsole) readCSI() (params string, final rune, ok bool) {
 func (t *tuiConsole) readPaste() []rune {
 	var content []rune
 	for {
-		r, _, err := t.in.ReadRune()
-		if err != nil {
+		r, more := t.nextRune()
+		if !more {
 			return content
 		}
 		if r == 0x1b {
@@ -1155,8 +1281,8 @@ func (t *tuiConsole) Select(title string, items []string, current int) (int, err
 
 	draw()
 	for {
-		r, _, err := t.in.ReadRune()
-		if err != nil {
+		r, ok := t.nextRune()
+		if !ok {
 			return finish(-1)
 		}
 		switch {
@@ -1204,13 +1330,21 @@ func (t *tuiConsole) Select(title string, items []string, current int) (int, err
 }
 
 // escIsBare reports whether an Esc keypress arrived alone: escape sequences
-// land as a burst, so an empty buffer shortly after means the bare key.
+// land as a burst, so if no rune follows within a short window it was the bare
+// key. A peeked rune is put back for the real decoder.
 func (t *tuiConsole) escIsBare() bool {
-	if t.in.Buffered() > 0 {
+	if len(t.ungot) > 0 {
 		return false
 	}
-	time.Sleep(25 * time.Millisecond)
-	return t.in.Buffered() == 0
+	select {
+	case r, ok := <-t.runes:
+		if ok {
+			t.unget(r)
+		}
+		return !ok // a closed stream after Esc counts as bare
+	case <-time.After(25 * time.Millisecond):
+		return true
+	}
 }
 
 func commonPrefix(a, b string) string {
@@ -1232,16 +1366,16 @@ func (t *tuiConsole) ReadKey(prompt string) (byte, error) {
 	t.removeFooterLocked()
 	t.writeLocked(prompt)
 	t.mu.Unlock()
-	r, _, err := t.in.ReadRune()
-	if err == nil && r == 0x1b {
+	r, ok := t.nextRune()
+	if ok && r == 0x1b {
 		t.readCSI()
 		r = 'n'
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if err != nil {
+	if !ok {
 		t.writeLocked("\n")
-		return 0, err
+		return 0, io.EOF
 	}
 	t.writeLocked(fmt.Sprintf("%c\n", r))
 	if had {

@@ -295,6 +295,56 @@ func TestDriveInterrupted(t *testing.T) {
 	}
 }
 
+// TestDriveInjectsQueuedSteer: a message typed during the turn (live input) is
+// injected as a user turn and acted on at the next boundary, in place of the
+// judge. The worker reply "ok" is not valid JSON, so if the judge still ran
+// first the drive would block; reaching done proves the steer was injected.
+// Breaker: drop the drainQueued branch and the judge sees "ok" -> driveBlocked.
+func TestDriveInjectsQueuedSteer(t *testing.T) {
+	drained := false
+	drain := func() []string {
+		if drained {
+			return nil
+		}
+		drained = true
+		return []string{"do X instead"}
+	}
+	p := &seqChat{fns: []func(context.Context) (agent.Reply, error){
+		reply("ok"), // the steered iteration's worker reply (no tool calls)
+		reply(`{"done": true, "blocked": false, "reason": "done"}`), // judge on the next loop
+	}}
+	r := driveRepl(t, p, workTurns())
+	_, count := counting()
+	cfg := driveConfig{request: "fix", maxIters: 5, mutations: count, drainQueued: drain}
+	if code := drive(r, cfg, workTurns()); code != driveDone {
+		t.Fatalf("code %d, want driveDone", code)
+	}
+	found := false
+	for _, tn := range r.history {
+		if tn.Role == "user" && strings.Contains(tn.Text, "do X instead") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the queued steer was not injected into history")
+	}
+}
+
+// TestInterruptsQueue: drain returns the enqueued messages and clears them, so a
+// steer is consumed once. Breaker: drop the clear in drain and it re-injects
+// forever.
+func TestInterruptsQueue(t *testing.T) {
+	in := &interrupts{}
+	in.enqueue("a")
+	in.enqueue("b")
+	if got := in.drain(); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("drain = %v, want [a b]", got)
+	}
+	if got := in.drain(); len(got) != 0 {
+		t.Fatalf("second drain must be empty, got %v", got)
+	}
+}
+
 // TestDriveJudgeUnavailable: no verdict means no mandate to keep spending.
 func TestDriveJudgeUnavailable(t *testing.T) {
 	p := &seqChat{} // judge call errors immediately

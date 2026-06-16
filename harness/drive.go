@@ -9,7 +9,7 @@
 // Stop layers, all of them, because each alone fails (the unanimous field
 // lesson): the judge, never the worker, decides from transcript evidence;
 // -max-iters bounds every request; a no-progress detector stops iterations
-// that mutate nothing; Ctrl-C always pauses to the prompt. Mutation approval
+// that mutate nothing; Escape always pauses to the prompt. Mutation approval
 // is untouched: gates in interactive, -yes in print mode.
 package harness
 
@@ -137,9 +137,13 @@ type driveConfig struct {
 	// Interactive routes it into the transcript.
 	say func(format string, a ...any)
 	// turnCtx supplies each iteration's context; nil means Background. The
-	// interactive REPL passes its interrupt watcher's, so Ctrl-C pauses the
+	// interactive REPL passes its interrupt watcher's, so Escape pauses the
 	// drive instead of being ignored.
 	turnCtx func() (context.Context, func())
+	// drainQueued returns and clears any messages the user typed while the turn
+	// ran (live input). When present at an iteration boundary they are injected
+	// as the user's steer for the next step, in place of the judge's verdict.
+	drainQueued func() []string
 }
 
 // drive continues an already-run first turn until the judge rules done or
@@ -165,43 +169,61 @@ func drive(r *repl, cfg driveConfig, firstTurns []agent.Turn) int {
 	iterTurns := firstTurns
 	stuck := 0
 	for iter := 1; ; iter++ {
-		// The judge runs under the same cancellable context as the worker, so
-		// Ctrl-C pauses the drive during the judge phase too (not just during a
-		// streamed worker iteration).
-		jctx, jdone := turnCtx()
-		v, jUsed, jerr := judgeGoal(jctx, r.p, cfg.request, renderTranscript(iterTurns, 300))
-		jdone()
-		r.accountAux(jUsed) // the judge is real spend; count it, leave the gauge
-		switch {
-		case jerr != nil:
-			if isCanceled(jerr) {
-				say("== paused; your next message steers")
-				return driveInterrupted
+		// A message the user typed while the turn ran (live input) takes priority
+		// over the judge: act on their steer at this boundary instead of
+		// auto-continuing or stopping.
+		var steered string
+		if cfg.drainQueued != nil {
+			if q := cfg.drainQueued(); len(q) > 0 {
+				steered = strings.Join(q, "\n")
 			}
-			// No verdict means no mandate to keep spending: stop quietly.
-			say("== judge unavailable (%s); returning to you", compact(jerr.Error()))
-			return driveBlocked
-		case v.Done:
-			if iter > 1 {
-				say("== done after %d iterations: %s", iter, compact(v.Reason))
-			}
-			return driveDone
-		case v.Blocked:
-			say("== needs you: %s", compact(v.Reason))
-			return driveBlocked
 		}
-
-		if iter >= cfg.maxIters {
-			say("== max iterations (%d) reached; latest verdict: %s", cfg.maxIters, compact(v.Reason))
-			return driveMaxIters
+		var v verdict
+		if steered == "" {
+			// The judge runs under the same cancellable context as the worker, so
+			// Escape pauses the drive during the judge phase too (not just during a
+			// streamed worker iteration).
+			jctx, jdone := turnCtx()
+			var jUsed agent.Usage
+			var jerr error
+			v, jUsed, jerr = judgeGoal(jctx, r.p, cfg.request, renderTranscript(iterTurns, 300))
+			jdone()
+			r.accountAux(jUsed) // the judge is real spend; count it, leave the gauge
+			switch {
+			case jerr != nil:
+				if isCanceled(jerr) {
+					say("== paused; your next message steers")
+					return driveInterrupted
+				}
+				// No verdict means no mandate to keep spending: stop quietly.
+				say("== judge unavailable (%s); returning to you", compact(jerr.Error()))
+				return driveBlocked
+			case v.Done:
+				if iter > 1 {
+					say("== done after %d iterations: %s", iter, compact(v.Reason))
+				}
+				return driveDone
+			case v.Blocked:
+				say("== needs you: %s", compact(v.Reason))
+				return driveBlocked
+			}
+			if iter >= cfg.maxIters {
+				say("== max iterations (%d) reached; latest verdict: %s", cfg.maxIters, compact(v.Reason))
+				return driveMaxIters
+			}
+		} else {
+			say("== steering: %s", compact(steered))
 		}
 
 		start := time.Now()
 		mutBefore := cfg.mutations()
 		mark := len(r.history)
-		opening := render(steerPrompt("continue", continueTemplate), map[string]string{
-			"iteration": fmt.Sprint(iter + 1), "verdict": v.Reason, "request": cfg.request,
-		})
+		opening := steered
+		if opening == "" {
+			opening = render(steerPrompt("continue", continueTemplate), map[string]string{
+				"iteration": fmt.Sprint(iter + 1), "verdict": v.Reason, "request": cfg.request,
+			})
+		}
 		if r.preflight(opening) {
 			return driveBlocked
 		}
@@ -241,9 +263,12 @@ func drive(r *repl, cfg driveConfig, firstTurns []agent.Turn) int {
 		r.managePressure() // the window boundary stays the chain's
 
 		iterTurns = out[mark:]
-		if cfg.mutations() == mutBefore {
+		switch {
+		case steered != "": // the user steered: intent, not a stall
+			stuck = 0
+		case cfg.mutations() == mutBefore:
 			stuck++
-		} else {
+		default:
 			stuck = 0
 		}
 		say("== iteration %d · %s · %d in / %d out tokens",
