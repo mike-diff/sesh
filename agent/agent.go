@@ -35,8 +35,21 @@ type ToolResult struct {
 type Turn struct {
 	Role    string       `json:"role"`
 	Text    string       `json:"text,omitempty"`
+	Images  []Image      `json:"images,omitempty"`
 	Calls   []ToolCall   `json:"calls,omitempty"`
 	Results []ToolResult `json:"results,omitempty"`
+}
+
+// Image is one image carried on a user Turn. Hash and metadata persist with the
+// session; the bytes do not. Data is tagged json:"-" so history stays lean on
+// disk: the harness keeps the bytes out of line and repopulates Data before the
+// provider call that needs them.
+type Image struct {
+	Hash      string `json:"hash"`       // sha256 of the (downscaled) bytes
+	MediaType string `json:"media_type"` // "image/png" | "image/jpeg"
+	Width     int    `json:"width,omitempty"`
+	Height    int    `json:"height,omitempty"`
+	Data      []byte `json:"-"` // in-memory for the wire call; never persisted
 }
 
 type ToolDef struct {

@@ -13,6 +13,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -252,6 +253,24 @@ func (p Anthropic) Chat(ctx context.Context, system string, history []agent.Turn
 	for _, t := range history {
 		switch t.Role {
 		case "user":
+			if len(t.Images) > 0 {
+				var blocks []map[string]any
+				if t.Text != "" {
+					blocks = append(blocks, map[string]any{"type": "text", "text": t.Text})
+				}
+				for _, im := range t.Images {
+					blocks = append(blocks, map[string]any{
+						"type": "image",
+						"source": map[string]any{
+							"type":       "base64",
+							"media_type": im.MediaType,
+							"data":       base64.StdEncoding.EncodeToString(im.Data),
+						},
+					})
+				}
+				msgs = append(msgs, map[string]any{"role": "user", "content": blocks})
+				break
+			}
 			msgs = append(msgs, map[string]any{"role": "user", "content": t.Text})
 		case "assistant":
 			var blocks []map[string]any
@@ -388,6 +407,21 @@ func (p OpenAI) Chat(ctx context.Context, system string, history []agent.Turn, t
 	for _, t := range history {
 		switch t.Role {
 		case "user":
+			if len(t.Images) > 0 {
+				var parts []map[string]any
+				if t.Text != "" {
+					parts = append(parts, map[string]any{"type": "text", "text": t.Text})
+				}
+				for _, im := range t.Images {
+					url := "data:" + im.MediaType + ";base64," + base64.StdEncoding.EncodeToString(im.Data)
+					parts = append(parts, map[string]any{
+						"type":      "image_url",
+						"image_url": map[string]any{"url": url},
+					})
+				}
+				msgs = append(msgs, map[string]any{"role": "user", "content": parts})
+				break
+			}
 			msgs = append(msgs, map[string]any{"role": "user", "content": t.Text})
 		case "assistant":
 			m := map[string]any{"role": "assistant", "content": t.Text}
