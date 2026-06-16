@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/mike-diff/sesh/agent"
 )
 
 func blobsDir() string {
@@ -69,4 +71,39 @@ func loadBlob(hash string) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("blob %s not found", hash)
+}
+
+// rehydrateImages repopulates the in-memory Data of any image whose bytes were
+// dropped on save (Data is json:"-"), so a resumed or handed-off turn can be
+// re-sent to the model. It walks history in place, modifying the shared slice:
+// an image already holding Data is left alone, so it is cheap on live turns and
+// safe to call repeatedly. An image whose blob cannot be loaded is dropped from
+// its turn rather than left with empty Data, which would send zero bytes to the
+// model; a dim note tells the user the image could not be restored.
+func rehydrateImages(history []agent.Turn) {
+	for i := range history {
+		t := &history[i]
+		if len(t.Images) == 0 {
+			continue
+		}
+		kept := t.Images[:0]
+		for _, im := range t.Images {
+			if len(im.Data) > 0 {
+				kept = append(kept, im)
+				continue
+			}
+			data, err := loadBlob(im.Hash)
+			if err != nil {
+				emit("%s  could not restore a pasted image (blob %s missing); continuing without it%s\n", dim, im.Hash, reset)
+				continue
+			}
+			im.Data = data
+			kept = append(kept, im)
+		}
+		if len(kept) == 0 {
+			t.Images = nil
+		} else {
+			t.Images = kept
+		}
+	}
 }

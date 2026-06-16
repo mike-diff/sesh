@@ -263,6 +263,7 @@ func Main() {
 		}
 		mark := len(r.history)
 		r.history = append(r.history, agent.Turn{Role: "user", Text: *printMode})
+		rehydrateImages(r.history) // a resumed session's prior images carry only a hash; load the bytes back before the wire call
 		out, spent, err := agent.Run(context.Background(), r.p, r.system, r.history, tools,
 			agent.Hooks{Gate: pg})
 		if err != nil {

@@ -40,6 +40,12 @@ func approxTokens(turns []agent.Turn) int {
 		for _, r := range t.Results {
 			n += len(r.Content)
 		}
+		// Images cost tokens too, but by patch grid, not characters. Pre-multiply
+		// by 4 so each image's estimate survives the final chars/4 division and the
+		// verbatim-tail budget reflects what an image turn will actually send.
+		for _, im := range t.Images {
+			n += estimateImageTokens(im.Width, im.Height) * 4
+		}
 	}
 	return n / 4
 }
@@ -59,7 +65,14 @@ func renderTranscript(turns []agent.Turn, maxResult int) string {
 	for _, t := range turns {
 		switch t.Role {
 		case "user":
-			fmt.Fprintf(&b, "USER: %s\n\n", t.Text)
+			fmt.Fprintf(&b, "USER: %s\n", t.Text)
+			// The brief writer must know an image existed without carrying its
+			// bytes: a one-line note keeps the visual context discoverable while
+			// the transcript stays text.
+			if len(t.Images) > 0 {
+				fmt.Fprintf(&b, "%s\n", imageNote(t.Images))
+			}
+			b.WriteByte('\n')
 		case "assistant":
 			if t.Text != "" {
 				fmt.Fprintf(&b, "ASSISTANT: %s\n", t.Text)
@@ -85,6 +98,17 @@ func renderTranscript(turns []agent.Turn, maxResult int) string {
 		s = s[:head] + "\n[... middle of the transcript omitted ...]\n" + s[len(s)-tail:]
 	}
 	return s
+}
+
+// imageNote renders a one-line, byte-free summary of a user turn's images for
+// the transcript: enough for the brief writer to record that images existed and
+// their shape, never the data itself.
+func imageNote(images []agent.Image) string {
+	parts := make([]string, len(images))
+	for i, im := range images {
+		parts[i] = fmt.Sprintf("%s %dx%d", im.MediaType, im.Width, im.Height)
+	}
+	return fmt.Sprintf("[%d image(s): %s]", len(images), strings.Join(parts, ", "))
 }
 
 // briefInstructions is structured role-first. Negative constraints and failed

@@ -1197,6 +1197,7 @@ func (r *repl) runTurn(ctx context.Context, line string, tools []agent.Tool, hoo
 		images = t.takeImages()
 	}
 	r.history = append(r.history, agent.Turn{Role: "user", Text: line, Images: images})
+	rehydrateImages(r.history) // a resumed session's prior images carry only a hash; load the bytes back before the wire call
 	out, spent, err := agent.Run(ctx, r.p, r.system, r.history, tools, hooks)
 	r.history = out
 	r.md.flush() // emit the message's trailing partial line before the summary
