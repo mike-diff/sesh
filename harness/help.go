@@ -54,6 +54,7 @@ SESSION COMMANDS (interactive; tab completes)
   /chain                       show this conversation's handoff chain and ledger
   /compact                     summarize in place (lossier than /handoff)
   /settings                    session settings picker: show thinking
+  /copy                        copy the last response to the clipboard (clean source)
   /help                        command and key reference
   exit, /exit, ctrl-d          quit (prints sesh -resume <id>)
 

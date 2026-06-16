@@ -280,6 +280,7 @@ var slashCommands = []slashCommand{
 	{name: "/chain", run: func(r *repl, _ string) { r.chainCmd() }},
 	{name: "/compact", run: func(r *repl, _ string) { r.compactCmd() }},
 	{name: "/settings", run: func(r *repl, _ string) { r.settingsCmd() }},
+	{name: "/copy", run: func(r *repl, _ string) { r.copyCmd() }},
 	{name: "/help", run: func(r *repl, _ string) { r.helpCmd() }},
 	{name: "/exit", quit: true},
 	{name: "/quit", quit: true},
@@ -344,6 +345,42 @@ func (r *repl) contextCmd(arg string) {
 	emit("%s  context window set to %s tokens%s; automatic handoff at 80%%%s\n\n", dim, kTokens(n), note, reset)
 }
 
+// copyCmd puts the last assistant response on the clipboard as its raw markdown
+// source: clean by construction, free of the terminal's line wrapping and the
+// renderer's indentation that a mouse-selected copy carries.
+func (r *repl) copyCmd() {
+	text := r.lastAssistantText()
+	if text == "" {
+		emit("%s  nothing to copy yet%s\n\n", dim, reset)
+		return
+	}
+	tool, osc := setClipboard(text)
+	var via string
+	switch {
+	case tool != "" && osc:
+		via = tool + " + OSC 52"
+	case tool != "":
+		via = tool
+	case osc:
+		via = "OSC 52"
+	default:
+		emit("%s  no clipboard available: install wl-copy/xclip/xsel, or enable OSC 52 in your terminal%s\n\n", red, reset)
+		return
+	}
+	emit("%s  copied last response to clipboard, %d lines (%s)%s\n\n", dim, 1+strings.Count(text, "\n"), via, reset)
+}
+
+// lastAssistantText returns the most recent assistant turn that carried text;
+// turns that only made tool calls have none. Empty when nothing has been said.
+func (r *repl) lastAssistantText() string {
+	for i := len(r.history) - 1; i >= 0; i-- {
+		if r.history[i].Role == "assistant" && r.history[i].Text != "" {
+			return r.history[i].Text
+		}
+	}
+	return ""
+}
+
 // settingsCmd opens the session-settings picker: arrows pick a setting, enter
 // toggles it, and the menu reopens with the new value until cancelled. These
 // are policies for THIS session; durable knobs live in files (providers.json,
@@ -395,11 +432,12 @@ func (r *repl) helpCmd() {
   /chain                 show this conversation's handoff chain and its ledger
   /compact               summarize history in place (lossier than /handoff)
   /settings              session settings picker (show thinking)
+  /copy                  copy the last response to the clipboard (clean source)
   /help                  this help
   exit, /exit            quit (ctrl-d works too); prints how to resume
-keys: ctrl-c cancels the running turn (twice quits) · shift+enter or ctrl-j
-      inserts a newline · up/down history · tab completes · pastes over 3
-      lines collapse to a [snippet] sent in full
+keys: ctrl-c cancels the running turn (twice quits) · shift+enter, ctrl-j, or
+      \+enter inserts a newline · up/down history · tab completes · pastes over
+      3 lines collapse to a [snippet] sent in full
 config: ~/.sesh/ holds providers.json, credentials, SYSTEM.md, statusline
 %s
 `, dim, reset)
