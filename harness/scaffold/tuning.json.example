@@ -70,6 +70,8 @@
   // "diff_lines": 40,           // edit/write diff lines fed back (-1 disables)
   // "update_check": false,      // true: interactive startup checks GitHub for a
   //                             // newer build and nudges you to run /update
+  // "input_max_rows": 6,        // rows the input editor grows to before it
+  //                             // scrolls vertically (cursor kept in view)
   // "skill_note_off": false,    // true reclaims tokens on strong-only setups
   // "brief_provider": "",       // write handoff briefs with another profile...
   // "brief_model": ""           // ...or another model (e.g. a cheap local one)

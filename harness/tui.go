@@ -172,11 +172,15 @@ type tuiConsole struct {
 	pad        bool   // footer was drawn after a partial line, behind a pushed \n
 	atExit     func() // run on signal-driven exit (reap owned processes)
 
-	// the input row's editor state
+	// the input editor's state
 	prompt string
 	buf    []rune
 	pos    int  // cursor index into buf
 	mask   bool // draw the buffer as asterisks (secrets)
+
+	maxInputRows int // editor grows to this many rows, then scrolls (dial)
+	winTop       int // first visual row shown once the editor scrolls
+	curVis       int // cursor's row within the drawn window, for footer teardown
 
 	// pastes large enough to collapse; index i renders as [snippet #i+1]
 	snippets []string
@@ -191,7 +195,7 @@ type tuiConsole struct {
 }
 
 func newTUI() (*tuiConsole, error) {
-	t := &tuiConsole{out: os.Stdout, in: bufio.NewReader(os.Stdin)}
+	t := &tuiConsole{out: os.Stdout, in: bufio.NewReader(os.Stdin), maxInputRows: 6}
 	if err := t.measure(); err != nil {
 		return nil, err
 	}
@@ -332,15 +336,18 @@ func (t *tuiConsole) visualCol() int {
 	return ((t.col - 1) % t.cols) + 1
 }
 
-// drawFooterLocked seats the four footer rows below the content tail:
+// drawFooterLocked seats the footer below the content tail:
 //
-//	──────────────────  divider
-//	you> input…         the editor row (cursor lives here)
-//	──────────────────  divider
+//	──────────────────  top divider
+//	you> input…         the editor, one or more rows (cursor lives on one)
+//	more text…
+//	──────────────────  bottom divider
 //	status line
 //
-// and leaves the cursor at the editing position. A partial streamed line gets
-// a pushed newline first, undone on the next lift.
+// The editor grows with the text up to inputCap rows, then scrolls vertically
+// with the cursor kept in view; a dim ⋯ in the gutter marks content scrolled
+// off above or below. The cursor is left at the editing position. A partial
+// streamed line gets a pushed newline first, undone on the next lift.
 func (t *tuiConsole) drawFooterLocked() {
 	if t.footer {
 		return
@@ -354,8 +361,42 @@ func (t *tuiConsole) drawFooterLocked() {
 	if !strings.ContainsRune(s, 0x1b) && segWidth(s) > t.cols {
 		s = clipToWidth(s, t.cols)
 	}
+
+	promptW := len([]rune(stripANSI(t.prompt)))
+	L := t.layout(t.cols - promptW)
+	cur := L.rowOf[t.pos]
+	winLen := len(L.rows)
+	if cap := t.inputCap(); winLen > cap {
+		winLen = cap
+	}
+	// keep the cursor's row inside the window, then clamp to the row range
+	if cur < t.winTop {
+		t.winTop = cur
+	}
+	if cur >= t.winTop+winLen {
+		t.winTop = cur - winLen + 1
+	}
+	if maxTop := len(L.rows) - winLen; t.winTop > maxTop {
+		t.winTop = maxTop
+	}
+	if t.winTop < 0 {
+		t.winTop = 0
+	}
+	t.curVis = cur - t.winTop
+
 	fmt.Fprintf(t.out, "\r\033[2K%s\n", div) // top divider
-	fmt.Fprint(t.out, "\r\033[2K\n")         // input row (drawn below)
+	for k := 0; k < winLen; k++ {
+		gut := strings.Repeat(" ", promptW)
+		switch {
+		case k == 0 && t.winTop == 0: // first row, not scrolled: the prompt
+			gut = t.prompt
+		case k == 0: // content scrolled off above
+			gut = scrollGutter(promptW)
+		case k == winLen-1 && t.winTop+winLen < len(L.rows): // content below
+			gut = scrollGutter(promptW)
+		}
+		fmt.Fprintf(t.out, "\r\033[2K%s%s\n", gut, L.rows[t.winTop+k])
+	}
 	fmt.Fprintf(t.out, "\r\033[2K%s\n", div) // bottom divider
 	t.footerProc = t.procStatus != ""
 	if t.footerProc {
@@ -365,31 +406,30 @@ func (t *tuiConsole) drawFooterLocked() {
 		}
 		fmt.Fprintf(t.out, "\r\033[2K%s%s%s\n", dim, s, reset) // status, with \n
 		fmt.Fprintf(t.out, "\r\033[2K%s", ps)                  // process row, no \n
-		fmt.Fprint(t.out, "\033[3A")                           // up to the input row
 	} else {
 		fmt.Fprintf(t.out, "\r\033[2K%s%s%s", dim, s, reset) // status, no trailing \n
-		fmt.Fprint(t.out, "\033[2A")                         // up to the input row
+	}
+	// climb back to the cursor's input row and column
+	up := winLen - t.curVis + 1
+	if t.footerProc {
+		up++
+	}
+	fmt.Fprintf(t.out, "\033[%dA\r", up)
+	if col := promptW + L.colOf[t.pos]; col > 0 {
+		fmt.Fprintf(t.out, "\033[%dC", col)
 	}
 	t.footer = true
-	t.drawInputLocked()
 }
 
-// removeFooterLocked lifts all four footer rows and returns the cursor to the
-// exact content position, mid-line included. The cursor must be on the input
-// row (where every input-row draw leaves it).
+// removeFooterLocked lifts the whole footer and returns the cursor to the exact
+// content position, mid-line included. The cursor must be on the input row the
+// last draw parked it on; clearing from the top divider down erases every
+// footer row regardless of how many the editor grew to.
 func (t *tuiConsole) removeFooterLocked() {
 	if !t.footer {
 		return
 	}
-	fmt.Fprint(t.out, "\r\033[2K")        // input row
-	fmt.Fprint(t.out, "\033[1B\r\033[2K") // bottom divider
-	fmt.Fprint(t.out, "\033[1B\r\033[2K") // status
-	up := 3
-	if t.footerProc {
-		fmt.Fprint(t.out, "\033[1B\r\033[2K") // process row
-		up = 4
-	}
-	fmt.Fprintf(t.out, "\033[%dA\r\033[2K", up) // up to the top divider
+	fmt.Fprintf(t.out, "\033[%dA\r\033[0J", t.curVis+1) // up to top divider, clear down
 	t.footer = false
 	if t.pad {
 		fmt.Fprint(t.out, "\033[1A\r")
@@ -399,36 +439,146 @@ func (t *tuiConsole) removeFooterLocked() {
 	}
 }
 
-// drawInputLocked repaints the input row in place with a sliding window that
-// keeps the cursor visible, then parks the terminal cursor at the editing
-// position. Widths are display columns, so CJK and snippets stay aligned.
-func (t *tuiConsole) drawInputLocked() {
+// refreshFooterLocked repaints the footer in place: lift, redraw, atomic under a
+// synchronized update so a growing or scrolling editor never tears. Used after
+// every keystroke, where the editor's height can change.
+func (t *tuiConsole) refreshFooterLocked() {
+	fmt.Fprint(t.out, "\033[?2026h")
+	t.removeFooterLocked()
+	t.drawFooterLocked()
+	fmt.Fprint(t.out, "\033[?2026l")
+}
+
+// layout is the editor's wrapped view of the buffer at a given text width: the
+// display string of each visual row (gutter excluded), and for every cursor
+// position the visual row and column it maps to. Hard newlines start a new row;
+// a long logical line wraps by display width. rowOf/colOf are indexed by cursor
+// position 0..len(buf), so [pos] is where the cursor sits before that rune.
+type layout struct {
+	rows  []string
+	rowOf []int
+	colOf []int
+}
+
+func (t *tuiConsole) layout(textWidth int) layout {
+	if textWidth < 1 {
+		textWidth = 1
+	}
 	segs := t.segments()
-	promptW := len([]rune(stripANSI(t.prompt)))
-	avail := t.cols - promptW - 1
-	if avail < 1 {
-		avail = 1
-	}
-	// slide the window start until the cursor fits
-	start := 0
-	for widthOf(segs[start:t.pos]) > avail {
-		start++
-	}
-	// extend the window to fill the available columns
-	end, w := start, 0
-	for end < len(segs) && w+segWidth(segs[end]) <= avail {
-		w += segWidth(segs[end])
-		end++
-	}
+	L := layout{rowOf: make([]int, len(t.buf)+1), colOf: make([]int, len(t.buf)+1)}
 	var b strings.Builder
-	for _, s := range segs[start:end] {
-		b.WriteString(s)
+	w := 0
+	flush := func() { L.rows = append(L.rows, b.String()); b.Reset(); w = 0 }
+	record := func(p int) { L.rowOf[p] = len(L.rows); L.colOf[p] = w }
+	for i, r := range t.buf {
+		if r == '\n' {
+			record(i) // before the newline: the end of the current row
+			flush()
+			continue
+		}
+		sw := segWidth(segs[i])
+		if w+sw > textWidth && w > 0 {
+			flush() // wrap: this rune (and the cursor before it) start a new row
+		}
+		record(i)
+		b.WriteString(segs[i])
+		w += sw
 	}
-	col := promptW + widthOf(segs[start:t.pos])
-	fmt.Fprintf(t.out, "\r\033[2K%s%s\r", t.prompt, b.String())
-	if col > 0 {
-		fmt.Fprintf(t.out, "\033[%dC", col)
+	record(len(t.buf)) // the end-of-buffer position
+	flush()
+	return L
+}
+
+// inputCap is how many editor rows may show before it scrolls: the dial,
+// clamped so the footer always fits with its dividers, status, optional process
+// row, and one content line above it.
+func (t *tuiConsole) inputCap() int {
+	c := t.maxInputRows
+	if c < 1 {
+		c = 1
 	}
+	reserve := 4 // top divider, bottom divider, status, one content line
+	if t.procStatus != "" {
+		reserve = 5
+	}
+	if max := t.rows - reserve; c > max {
+		c = max
+	}
+	if c < 1 {
+		c = 1
+	}
+	return c
+}
+
+// scrollGutter is the dim ⋯ shown in the editor's gutter when content is
+// scrolled out of view, aligned to where the prompt's text would end.
+func scrollGutter(promptW int) string {
+	if promptW < 1 {
+		return dim + "⋯" + reset
+	}
+	return strings.Repeat(" ", promptW-1) + dim + "⋯" + reset
+}
+
+// posAtRowCol returns the cursor position on the given visual row whose column
+// is nearest goalCol, for vertical cursor moves.
+func posAtRowCol(L layout, row, goalCol int) int {
+	best, bestDelta := 0, 1<<30
+	for p, r := range L.rowOf {
+		if r != row {
+			continue
+		}
+		d := L.colOf[p] - goalCol
+		if d < 0 {
+			d = -d
+		}
+		if d < bestDelta {
+			best, bestDelta = p, d
+		}
+	}
+	return best
+}
+
+// cursorUpLocked / cursorDownLocked move the cursor one visual row, keeping the
+// column. They report false at the top/bottom row so the caller falls through to
+// history navigation, the readline behavior in a multi-line buffer.
+func (t *tuiConsole) cursorUpLocked() bool {
+	L := t.layout(t.cols - len([]rune(stripANSI(t.prompt))))
+	row := L.rowOf[t.pos]
+	if row == 0 {
+		return false
+	}
+	t.pos = posAtRowCol(L, row-1, L.colOf[t.pos])
+	return true
+}
+
+func (t *tuiConsole) cursorDownLocked() bool {
+	L := t.layout(t.cols - len([]rune(stripANSI(t.prompt))))
+	row := L.rowOf[t.pos]
+	if row >= len(L.rows)-1 {
+		return false
+	}
+	t.pos = posAtRowCol(L, row+1, L.colOf[t.pos])
+	return true
+}
+
+// lineStart / lineEnd bound the logical (newline-delimited) line the cursor is
+// in, for Ctrl-A / Ctrl-E in a multi-line buffer.
+func lineStart(buf []rune, pos int) int {
+	for i := pos - 1; i >= 0; i-- {
+		if buf[i] == '\n' {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+func lineEnd(buf []rune, pos int) int {
+	for i := pos; i < len(buf); i++ {
+		if buf[i] == '\n' {
+			return i
+		}
+	}
+	return len(buf)
 }
 
 // segments renders each buffer rune as its display string: masked, newline
@@ -441,7 +591,9 @@ func (t *tuiConsole) segments() []string {
 		case t.mask:
 			segs[i] = "*"
 		case r == '\n':
-			segs[i] = "↵"
+			// A real break: layout starts a new row here, and the submit echo
+			// shows the message on multiple lines.
+			segs[i] = "\n"
 		case r >= snippetBase && int(r-snippetBase) < len(t.snippets):
 			n := int(r - snippetBase)
 			segs[i] = fmt.Sprintf("[snippet #%d: %d lines]", n+1, 1+strings.Count(t.snippets[n], "\n"))
@@ -480,14 +632,6 @@ func segWidth(s string) int {
 	w := 0
 	for _, r := range stripANSI(s) { // a segment may carry mention-highlight SGR
 		w += runeWidth(r)
-	}
-	return w
-}
-
-func widthOf(segs []string) int {
-	w := 0
-	for _, s := range segs {
-		w += segWidth(s)
 	}
 	return w
 }
@@ -597,8 +741,8 @@ func (t *tuiConsole) beginInput(prompt string, mask bool) {
 	t.snippets = nil
 	t.histIdx = len(t.hist)
 	t.draft = nil
-	t.drawFooterLocked()
-	t.drawInputLocked()
+	t.winTop = 0
+	t.refreshFooterLocked()
 	t.mu.Unlock()
 }
 
@@ -661,10 +805,10 @@ func (t *tuiConsole) readLine(prompt string, mask bool) (string, error) {
 			t.buf, t.pos = nil, 0
 		case r == 0x0b: // Ctrl-K kills to end of line
 			t.buf = t.buf[:t.pos]
-		case r == 0x01: // Ctrl-A: start of line
-			t.pos = 0
-		case r == 0x05: // Ctrl-E: end of line
-			t.pos = len(t.buf)
+		case r == 0x01: // Ctrl-A: start of the current logical line
+			t.pos = lineStart(t.buf, t.pos)
+		case r == 0x05: // Ctrl-E: end of the current logical line
+			t.pos = lineEnd(t.buf, t.pos)
 		case r == '\t':
 			if !mask {
 				t.completeLocked()
@@ -680,7 +824,7 @@ func (t *tuiConsole) readLine(prompt string, mask bool) (string, error) {
 			t.insertLocked(r)
 		}
 		if t.footer {
-			t.drawInputLocked()
+			t.refreshFooterLocked()
 		}
 		t.mu.Unlock()
 	}
@@ -726,10 +870,14 @@ func (t *tuiConsole) handleEscape() {
 	switch {
 	case final == 'u' && (params == "13;2" || params == "13;3"): // shift/alt+enter
 		t.insertLocked('\n')
-	case final == 'A': // up
-		t.histMoveLocked(-1)
-	case final == 'B': // down
-		t.histMoveLocked(+1)
+	case final == 'A': // up: move a visual row, else walk history at the top
+		if !t.cursorUpLocked() {
+			t.histMoveLocked(-1)
+		}
+	case final == 'B': // down: move a visual row, else walk history at the bottom
+		if !t.cursorDownLocked() {
+			t.histMoveLocked(+1)
+		}
 	case final == 'C': // right
 		if t.pos < len(t.buf) {
 			t.pos++

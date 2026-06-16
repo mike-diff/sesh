@@ -94,6 +94,9 @@ type Tuning struct {
 	// /update. Default off: it is a network call to GitHub on every launch, so
 	// it is opt-in rather than phoning home for everyone.
 	UpdateCheck bool `json:"update_check,omitempty"`
+	// InputMaxRows is how many rows the interactive input editor grows to before
+	// it scrolls vertically with the cursor kept in view. Default 6.
+	InputMaxRows int `json:"input_max_rows,omitempty"`
 }
 
 func defaultTuning() Tuning {
@@ -112,6 +115,7 @@ func defaultTuning() Tuning {
 		ProcPromoteSecs:   60,
 		MaxProcs:          10,
 		ProcLogTail:       200,
+		InputMaxRows:      6,
 	}
 }
 
@@ -205,6 +209,7 @@ func overlayTuning(t *Tuning, got Tuning) {
 	set(&t.ProcPromoteSecs, got.ProcPromoteSecs)
 	set(&t.MaxProcs, got.MaxProcs)
 	set(&t.ProcLogTail, got.ProcLogTail)
+	set(&t.InputMaxRows, got.InputMaxRows)
 	// DiffLines accepts -1 (disable), so its overlay applies on any nonzero.
 	if got.DiffLines != 0 {
 		t.DiffLines = got.DiffLines

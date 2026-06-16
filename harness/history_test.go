@@ -117,7 +117,9 @@ func TestReplCompletions(t *testing.T) {
 
 func TestSegments(t *testing.T) {
 	tc := &tuiConsole{buf: []rune("a\nb")}
-	if got := strings.Join(tc.segments(), ""); got != "a↵b" {
+	// A newline renders as a real break (layout starts a new row; the submit
+	// echo shows the message on multiple lines), not an inline glyph.
+	if got := strings.Join(tc.segments(), ""); got != "a\nb" {
 		t.Fatalf("newline display: %q", got)
 	}
 	tc.mask = true
