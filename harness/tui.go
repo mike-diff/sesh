@@ -24,6 +24,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/mike-diff/sesh/agent"
 )
 
 // console abstracts where user input comes from and how the footer is drawn,
@@ -158,6 +160,12 @@ func (c *plainConsole) Select(title string, items []string, current int) (int, e
 // rune per snippet, so the cursor treats a snippet as a single character.
 const snippetBase rune = 0xE000
 
+// imageBase marks pasted-image tokens in the buffer, in a separate private-use
+// block from snippetBase. A token's rune value is its absolute index into the
+// images slice (stable for byte lookup); its displayed [image-N] number is by
+// order of appearance, so a deletion renumbers the rest.
+const imageBase rune = 0xF000
+
 type tuiConsole struct {
 	mu         sync.Mutex
 	out        *os.File
@@ -184,6 +192,16 @@ type tuiConsole struct {
 
 	// pastes large enough to collapse; index i renders as [snippet #i+1]
 	snippets []string
+
+	// images is the append-only list of pasted images for the message being
+	// composed; an imageBase token's rune value indexes into it. It is never
+	// compacted on delete (that would invalidate live token indices). submitImages
+	// holds the images of the last submitted message, drained by takeImages.
+	// visionOK reports whether the active model can see images; nil disables the
+	// gate (the plain console and tests leave it unset).
+	images       []agent.Image
+	submitImages []agent.Image
+	visionOK     func() bool
 
 	// history and completion
 	hist      []string
@@ -596,6 +614,7 @@ func lineEnd(buf []rune, pos int) int {
 func (t *tuiConsole) segments() []string {
 	hi := t.mentionMask()
 	segs := make([]string, len(t.buf))
+	imgSeen := 0 // running count of image tokens, so display numbering is by appearance
 	for i, r := range t.buf {
 		switch {
 		case t.mask:
@@ -604,9 +623,12 @@ func (t *tuiConsole) segments() []string {
 			// A real break: layout starts a new row here, and the submit echo
 			// shows the message on multiple lines.
 			segs[i] = "\n"
-		case r >= snippetBase && int(r-snippetBase) < len(t.snippets):
+		case r >= snippetBase && r < imageBase && int(r-snippetBase) < len(t.snippets):
 			n := int(r - snippetBase)
 			segs[i] = fmt.Sprintf("[snippet #%d: %d lines]", n+1, 1+strings.Count(t.snippets[n], "\n"))
+		case r >= imageBase && int(r-imageBase) < len(t.images):
+			imgSeen++
+			segs[i] = fmt.Sprintf("[image-%d]", imgSeen)
 		default:
 			segs[i] = string(r)
 		}
@@ -749,6 +771,7 @@ func (t *tuiConsole) beginInput(prompt string, mask bool) {
 	t.mu.Lock()
 	t.prompt, t.buf, t.pos, t.mask = prompt, nil, 0, mask
 	t.snippets = nil
+	t.images = nil
 	t.histIdx = len(t.hist)
 	t.draft = nil
 	t.winTop = 0
@@ -892,10 +915,19 @@ func (t *tuiConsole) readLineMode(prompt string, mask bool, turn *turnAttend) (s
 			t.mu.Unlock()
 			return "", io.EOF
 		case r == '\r' && turn != nil: // Enter while working: queue the message, keep editing
-			if line := strings.TrimSpace(t.expandSnippets()); line != "" {
+			// A queued steer carries text only: images pasted into it are not sent
+			// (per the feature's non-goal), but their labels still render so no raw
+			// token rune leaks into the steer text.
+			text, imgs := t.composeMessage()
+			if line := strings.TrimSpace(text); line != "" {
 				turn.queue(line)
 				t.noteQueuedLocked(line)
-				t.buf, t.pos, t.snippets = nil, 0, nil
+				if len(imgs) > 0 {
+					t.removeFooterLocked()
+					t.writeLocked(fmt.Sprintf("%s  images are not carried on a steer; resend them in a fresh message%s\n", dim, reset))
+					t.drawFooterLocked()
+				}
+				t.buf, t.pos, t.snippets, t.images = nil, 0, nil, nil
 			}
 		case r == '\r': // Enter submits; Shift+Enter, Ctrl-J, and \+Enter newline
 			if !mask && t.pos > 0 && t.buf[t.pos-1] == '\\' {
@@ -911,7 +943,9 @@ func (t *tuiConsole) readLineMode(prompt string, mask bool, turn *turnAttend) (s
 			for _, s := range segs {
 				shown.WriteString(s)
 			}
-			line := strings.TrimSpace(t.expandSnippets())
+			text, imgs := t.composeMessage()
+			line := strings.TrimSpace(text)
+			t.submitImages = imgs // drained by takeImages after ReadLine returns
 			t.endInput(t.prompt + shown.String())
 			if !mask {
 				t.hist = appendHistory(t.histPath, t.hist, line)
@@ -939,6 +973,12 @@ func (t *tuiConsole) readLineMode(prompt string, mask bool, turn *turnAttend) (s
 			t.pos = lineStart(t.buf, t.pos)
 		case r == 0x05: // Ctrl-E: end of the current logical line
 			t.pos = lineEnd(t.buf, t.pos)
+		case r == 0x16 && !mask: // Ctrl-V: paste an image off the clipboard
+			// The capture shells out and writes to the transcript, so it must run
+			// without the mutex (Print relocks it); mirror the Escape handler.
+			t.mu.Unlock()
+			t.captureImage()
+			t.mu.Lock()
 		case r == '\t':
 			if !mask {
 				t.completeLocked()
@@ -974,13 +1014,95 @@ func (t *tuiConsole) insertLocked(r rune) {
 func (t *tuiConsole) expandSnippets() string {
 	var b strings.Builder
 	for _, r := range t.buf {
-		if r >= snippetBase && int(r-snippetBase) < len(t.snippets) {
+		if r >= snippetBase && r < imageBase && int(r-snippetBase) < len(t.snippets) {
 			b.WriteString(t.snippets[int(r-snippetBase)])
 			continue
 		}
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// captureImage runs the Ctrl-V pipeline: read the clipboard image, gate it on
+// the active model's vision support, downscale and store it, then insert an
+// atomic [image-N] token and print an honest note. It takes the mutex itself
+// (the caller released it so the transcript writes can relock); every path that
+// declines to insert states why, so a paste is never silently dropped.
+func (t *tuiConsole) captureImage() {
+	raw, _, err := readClipboardImage()
+	if err != nil {
+		t.note("can't paste image: " + err.Error())
+		return
+	}
+	if t.visionOK != nil && !t.visionOK() {
+		t.note("the current model can't see images; switch with /model, or set \"vision\": true on the provider profile if it does")
+		return
+	}
+	data, mediaType, w, h, err := decodeAndDownscale(raw)
+	if err != nil {
+		t.note("can't paste image: " + err.Error())
+		return
+	}
+	hash, err := storeBlob(data, mediaType)
+	if err != nil {
+		t.note("can't paste image: " + err.Error())
+		return
+	}
+	im := agent.Image{Hash: hash, MediaType: mediaType, Width: w, Height: h, Data: data}
+	t.mu.Lock()
+	t.images = append(t.images, im)
+	t.insertLocked(imageBase + rune(len(t.images)-1))
+	if t.footer {
+		t.refreshFooterLocked()
+	}
+	t.mu.Unlock()
+	dims := "unknown size"
+	if w > 0 && h > 0 {
+		dims = fmt.Sprintf("%dx%d", w, h)
+	}
+	t.note(fmt.Sprintf("image captured: %s %s, ~%d tokens",
+		mediaType, dims, estimateImageTokens(w, h)))
+}
+
+// note drops a dim transcript line above the footer, the capture feedback
+// counterpart to the snippet note. It takes the mutex itself.
+func (t *tuiConsole) note(msg string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.removeFooterLocked()
+	t.writeLocked(fmt.Sprintf("%s  %s%s\n", dim, msg, reset))
+	t.drawFooterLocked()
+}
+
+// composeMessage walks the buffer into the text to send and the ordered images
+// it carries: snippet tokens expand to their pasted content, image tokens append
+// their image and write a [image-K] label (numbered by appearance, matching what
+// segments() drew), and every other rune passes through. An image token never
+// leaks into the text as a raw private-use rune.
+func (t *tuiConsole) composeMessage() (string, []agent.Image) {
+	var b strings.Builder
+	var imgs []agent.Image
+	for _, r := range t.buf {
+		switch {
+		case r >= snippetBase && r < imageBase && int(r-snippetBase) < len(t.snippets):
+			b.WriteString(t.snippets[int(r-snippetBase)])
+		case r >= imageBase && int(r-imageBase) < len(t.images):
+			imgs = append(imgs, t.images[int(r-imageBase)])
+			fmt.Fprintf(&b, "[image-%d]", len(imgs))
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String(), imgs
+}
+
+// takeImages returns the images of the last submitted message and clears them,
+// so the next submit starts empty. The repl pulls them after ReadLine to attach
+// to the user Turn.
+func (t *tuiConsole) takeImages() []agent.Image {
+	imgs := t.submitImages
+	t.submitImages = nil
+	return imgs
 }
 
 // handleEscape reads one escape sequence and applies its editing action:

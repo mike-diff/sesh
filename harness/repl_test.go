@@ -608,3 +608,47 @@ func TestStatusTextNoProvider(t *testing.T) {
 		t.Fatalf("status with no provider must say so: %q", got)
 	}
 }
+
+// TestModelSupportsVision: the name heuristic recognizes known vision families
+// (case-insensitively) and treats an unknown model as text-only, so an image is
+// never silently sent to a model that cannot read it. Breaker: default the
+// unknown case to true and "qwen2.5-coder" is wrongly called vision-capable.
+func TestModelSupportsVision(t *testing.T) {
+	for _, name := range []string{"claude-opus-4", "gpt-4o", "GPT-4.1", "gemini-1.5-pro", "pixtral-12b", "qwen2-vl", "glm-4.6v"} {
+		if !modelSupportsVision(name) {
+			t.Fatalf("%q should be vision-capable", name)
+		}
+	}
+	for _, name := range []string{"qwen2.5-coder", "llama3", "deepseek-chat", ""} {
+		if modelSupportsVision(name) {
+			t.Fatalf("%q should not be assumed vision-capable", name)
+		}
+	}
+}
+
+// TestVisionCapableDialOverrides: an explicit Vision dial on the active profile
+// wins over the name heuristic in both directions, the escape hatch named in the
+// paste-blocked guidance. Breaker: consult the heuristic before the dial and the
+// forced-on text-model case returns false.
+func TestVisionCapableDialOverrides(t *testing.T) {
+	tru, fls := true, false
+	cases := []struct {
+		name   string
+		model  string
+		vision *bool
+		want   bool
+	}{
+		{"dial forces a text model on", "qwen2.5-coder", &tru, true},
+		{"dial forces a vision model off", "claude-opus-4", &fls, false},
+		{"unset dial falls back to the heuristic", "claude-opus-4", nil, true},
+		{"no profile falls back to the heuristic", "qwen2.5-coder", nil, false},
+	}
+	for _, c := range cases {
+		r := &repl{model: c.model, current: "p", pcfg: ProvidersConfig{Providers: map[string]Profile{
+			"p": {Vision: c.vision},
+		}}}
+		if got := r.visionCapable(); got != c.want {
+			t.Fatalf("%s: visionCapable = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

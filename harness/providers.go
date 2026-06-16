@@ -33,6 +33,10 @@ type Profile struct {
 	// CustomModel is one user-added model the endpoint did not list, remembered
 	// per provider so it persists and stays in /model.
 	CustomModel string `json:"custom_model,omitempty"`
+	// Vision is the tri-state override for whether this profile's model can see
+	// images: nil leaves it to the model-name heuristic, true or false forces it.
+	// It is the escape hatch named in the paste-blocked guidance.
+	Vision *bool `json:"vision,omitempty"`
 }
 
 // ProvidersConfig is a parsed providers.json: a set of named profiles and the

@@ -179,6 +179,39 @@ func (r *repl) refreshProcLine() {
 // invalidates the provider's prompt cache, so the rebuild is cache-neutral.
 func (r *repl) refreshSystem() {
 	r.system = systemPrompt() + identityBlock(r.current, r.model, r.protocol, r.switched)
+	// The TUI's image-paste gate reads the live brain, so wire it here where the
+	// brain is first set and on every switch. The closure resolves dynamically,
+	// so the gate tracks /model and /provider changes without re-wiring.
+	if t, ok := r.con.(*tuiConsole); ok && t.visionOK == nil {
+		t.visionOK = r.visionCapable
+	}
+}
+
+// visionCapable reports whether the active model can see images. An explicit
+// Vision dial on the active profile wins; otherwise the model name is matched
+// against a heuristic, which treats an unknown model as text-only so an image is
+// never silently dropped on a model that cannot read it.
+func (r *repl) visionCapable() bool {
+	if prof, ok := r.pcfg.Providers[r.current]; ok && prof.Vision != nil {
+		return *prof.Vision
+	}
+	return modelSupportsVision(r.model)
+}
+
+// modelSupportsVision is the name heuristic behind visionCapable: a model whose
+// id contains one of these markers is assumed to accept images. Unknown models
+// are not assumed vision-capable.
+func modelSupportsVision(name string) bool {
+	name = strings.ToLower(name)
+	for _, marker := range []string{
+		"claude", "gpt-4o", "gpt-4.1", "gpt-5", "o3", "o4",
+		"gemini", "llava", "pixtral", "-vl", "glm-4.5v", "glm-4.6v",
+	} {
+		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // goodbye releases the live-instance lock and prints how to pick the
@@ -1155,7 +1188,15 @@ func ask(c console, prompt, def string) string {
 // on the next call.
 func (r *repl) runTurn(ctx context.Context, line string, tools []agent.Tool, hooks agent.Hooks) ([]agent.Turn, bool) {
 	mark := len(r.history)
-	r.history = append(r.history, agent.Turn{Role: "user", Text: line})
+	// Images the user pasted into this message ride along on the user turn. Only
+	// the interactive TUI captures them; the plain console has none. Pulling them
+	// here (the single first-turn chokepoint) keeps them off driven steers, which
+	// by design carry text only.
+	var images []agent.Image
+	if t, ok := r.con.(*tuiConsole); ok {
+		images = t.takeImages()
+	}
+	r.history = append(r.history, agent.Turn{Role: "user", Text: line, Images: images})
 	out, spent, err := agent.Run(ctx, r.p, r.system, r.history, tools, hooks)
 	r.history = out
 	r.md.flush() // emit the message's trailing partial line before the summary
