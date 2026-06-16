@@ -435,9 +435,10 @@ func (r *repl) helpCmd() {
   /copy                  copy the last response to the clipboard (clean source)
   /help                  this help
   exit, /exit            quit (ctrl-d works too); prints how to resume
-keys: ctrl-c cancels the running turn (twice quits) · shift+enter, ctrl-j, or
-      \+enter inserts a newline · up/down history · tab completes · pastes over
-      3 lines collapse to a [snippet] sent in full
+keys: while a turn runs, type to queue a steer (sent at the next step) or esc
+      to cancel · ctrl-c quits (twice) · shift+enter, ctrl-j, or \+enter inserts
+      a newline · up/down history · tab completes · pastes over 3 lines collapse
+      to a [snippet] sent in full
 config: ~/.sesh/ holds providers.json, credentials, SYSTEM.md, statusline
 %s
 `, dim, reset)
@@ -457,11 +458,11 @@ func (r *repl) banner(cwd string, ask bool, resumed int, buildErr error) {
 	emit("\n")
 	switch {
 	case ask:
-		emit("-ask: write/edit/bash prompt for approval.\n")
+		emit("-ask: write/edit/bash prompt for approval. ctrl-c quits.\n")
 	case findGateMod() != "":
-		emit("tools run freely; gate mod %s rules on write/edit/bash. ctrl-c interrupts.\n", findGateMod())
+		emit("tools run freely; gate mod %s rules on write/edit/bash. esc cancels, type to steer.\n", findGateMod())
 	default:
-		emit("tools run freely; ctrl-c interrupts (-ask to approve each mutation).\n")
+		emit("tools run freely; while it works, type to steer or esc to cancel (-ask to approve each mutation).\n")
 	}
 	if len(r.models) > 0 {
 		emit("%s%d models on this endpoint; /model to list%s\n", dim, len(r.models), reset)

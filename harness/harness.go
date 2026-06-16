@@ -404,19 +404,35 @@ func Main() {
 		}()
 	}
 
-	// Ctrl-C cancels the running turn, not sesh; pressed twice within
-	// two seconds it quits (after restoring the terminal).
+	// Escape cancels the running turn; Ctrl-C quits (twice within two seconds,
+	// after restoring the terminal).
 	intr := newInterrupts(func() {
 		con.Close()
 		r.goodbye()
 	})
 
+	say := func(f string, a ...any) {
+		emit("%s  "+f+"%s\n", append(append([]any{dim}, a...), reset)...)
+	}
+	// Live input (type/queue/Escape-cancel while the agent works) needs the
+	// footer TUI and a turn that never stops to ask: with -ask the gate reads
+	// approvals mid-turn from the same keyboard, so that posture stays
+	// synchronous.
+	tc, isTUI := con.(*tuiConsole)
+	live := isTUI && !(*ask && !*autoYes)
+
+	var pending string // a queued message that becomes the next turn's input
 	for {
-		line, err := con.ReadLine("-> ")
-		if err != nil {
-			emit("\n")
-			r.goodbye()
-			return
+		line := pending
+		pending = ""
+		if line == "" {
+			l, err := con.ReadLine("-> ")
+			if err != nil {
+				emit("\n")
+				r.goodbye()
+				return
+			}
+			line = l
 		}
 		if line == "" {
 			continue
@@ -435,40 +451,66 @@ func Main() {
 		if r.preflight(line) {
 			continue // the message can never fit; nothing was sent
 		}
-		ctx, done := intr.turnContext()
-		stopSpin := r.spin()
-		turns, ok := r.runTurn(ctx, line, tools, hooks)
-		done()
+		cfg := driveConfig{
+			request: line, maxIters: *maxIters, tools: tools, hooks: hooks,
+			mutations: mutCount, turnCtx: intr.turnContext, drainQueued: intr.drain,
+			say: say,
+		}
 		// Goal-driven persistence: the request is the goal; a judged not-done
 		// keeps the session working until done, blocked, stuck, or the cap.
-		// Conversation (no tool use) never drives. Ctrl-C pauses to the prompt.
-		if ok {
-			drive(r, driveConfig{
-				request: line, maxIters: *maxIters, tools: tools, hooks: hooks,
-				mutations: mutCount, turnCtx: intr.turnContext,
-				say: func(f string, a ...any) {
-					emit("%s  "+f+"%s\n", append(append([]any{dim}, a...), reset)...)
-				},
-			}, turns)
+		// Conversation (no tool use) never drives.
+		if live {
+			// The turn runs in the background while the editor stays live: the
+			// user can type a steering message (queued, injected at the next
+			// boundary) or press Escape to cancel.
+			ctx, done := intr.turnContext()
+			stopSpin := r.spin()
+			doneCh := make(chan struct{})
+			go func() {
+				defer close(doneCh)
+				turns, ok := r.runTurn(ctx, line, tools, hooks)
+				done()
+				if ok {
+					drive(r, cfg, turns)
+				}
+			}()
+			tc.attendTurn(turnAttend{done: doneCh, cancel: intr.cancelCurrent, queue: intr.enqueue})
+			<-doneCh // the worker is finished (attendTurn can also return on EOF); never overlap turns
+			stopSpin()
+			if q := intr.drain(); len(q) > 0 { // typed after the last boundary: run next
+				pending = strings.Join(q, "\n")
+			}
+		} else {
+			ctx, done := intr.turnContext()
+			stopSpin := r.spin()
+			turns, ok := r.runTurn(ctx, line, tools, hooks)
+			done()
+			if ok {
+				drive(r, cfg, turns)
+			}
+			stopSpin()
 		}
-		stopSpin()
 	}
 }
 
-// interrupts watches Ctrl-C for the whole session. During a turn the first
-// press cancels that turn; a second press within the window (whether or not a
-// turn is running) restores the terminal and quits. The watcher is persistent
-// so the quit window spans the gap after a cancelled turn ends, which is
-// exactly when an impatient second press arrives.
+// interrupts owns turn control for the session: the cancel function for the
+// turn in flight (the live editor's Escape calls it) and the queue of messages
+// the user types while a turn runs (drained and injected as a steer at the next
+// boundary). Ctrl-C is handled here too, but only to quit (a stray press warns,
+// a second within the window quits), since cancelling is Escape's job now.
 type interrupts struct {
 	mu      sync.Mutex
 	cancel  context.CancelFunc // non-nil while a turn is running
 	last    time.Time
 	cleanup func()
+	queued  []string // messages typed during a turn, drained at the next boundary
 }
 
 const doublePressWindow = 2 * time.Second
 
+// newInterrupts wires Ctrl-C to quit (a stray press warns first, a second within
+// the window quits and restores the terminal). Cancelling a turn is Escape's
+// job, handled by the live editor, so Ctrl-C is left purely for quitting.
 func newInterrupts(cleanup func()) *interrupts {
 	in := &interrupts{cleanup: cleanup}
 	sigc := make(chan os.Signal, 1)
@@ -478,21 +520,41 @@ func newInterrupts(cleanup func()) *interrupts {
 			in.mu.Lock()
 			double := time.Since(in.last) < doublePressWindow
 			in.last = time.Now()
-			cancel := in.cancel
 			in.mu.Unlock()
-			switch {
-			case double:
+			if double {
 				in.cleanup()
 				os.Exit(130)
-			case cancel != nil:
-				emit("\n%s  cancelling turn... (ctrl-c again to quit)%s\n", yellow, reset)
-				cancel()
-			default:
-				emit("\n%s  (ctrl-c again to quit)%s\n", yellow, reset)
 			}
+			emit("\n%s  (ctrl-c again to quit; esc cancels the turn)%s\n", yellow, reset)
 		}
 	}()
 	return in
+}
+
+// cancelCurrent aborts the turn in flight, if any (the live editor's Escape).
+func (in *interrupts) cancelCurrent() {
+	in.mu.Lock()
+	c := in.cancel
+	in.mu.Unlock()
+	if c != nil {
+		c()
+	}
+}
+
+// enqueue stashes a message typed while a turn runs; drain returns and clears
+// the queue at a safe boundary, where it can be injected as a user turn.
+func (in *interrupts) enqueue(s string) {
+	in.mu.Lock()
+	in.queued = append(in.queued, s)
+	in.mu.Unlock()
+}
+
+func (in *interrupts) drain() []string {
+	in.mu.Lock()
+	q := in.queued
+	in.queued = nil
+	in.mu.Unlock()
+	return q
 }
 
 // turnContext hands out a cancellable context for one turn and the cleanup

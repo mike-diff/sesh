@@ -30,7 +30,8 @@ GOAL-DRIVEN PERSISTENCE (default in every mode)
   fresh-context judge rules from transcript evidence: done (stop), blocked
   (return to the user), or continue (the reason feeds the next iteration and
   work resumes). Plain conversation is never judged and never loops.
-  Stop layers: -max-iters, a no-progress detector, -max-tools, Ctrl-C.
+  Stop layers: -max-iters, a no-progress detector, -max-tools, Esc (cancels a
+  turn; type while it works to steer at the next step). Ctrl-C quits.
 
 CONTINUITY (infinite sessions)
   Context pressure is managed by handoff, never lossy in-place compaction: at
