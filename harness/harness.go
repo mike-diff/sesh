@@ -366,6 +366,9 @@ func Main() {
 		t.completer = r.completions
 		t.atExit = func() { pm.reapAll() }
 		t.mention = newMentions(r.md.pal.accent) // #skill / @file completion + highlight
+		if tune.InputMaxRows > 0 {
+			t.maxInputRows = tune.InputMaxRows
+		}
 	}
 	// Pull the endpoint's model list once, for /model. Best-effort: an endpoint
 	// without discovery just leaves the list empty; /model still switches by
