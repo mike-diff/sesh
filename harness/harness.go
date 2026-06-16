@@ -191,6 +191,7 @@ func Main() {
 	sweepDeadProcs(sess.ID) // reap processes a previously-crashed sesh left behind
 	pm := newProcManager(sess.ID)
 	os.Setenv("SESH_SESSION", sess.ID) // tool/gate/statusline mods can find this session's run dir
+	go gcBlobs()                       // sweep orphaned image blobs off the hot path; best-effort, never blocks startup
 	tools := builtinTools(*unsafePaths, pm)
 	// The engines (skill, mcp) join only when their user-space content exists:
 	// an empty mount costs zero tokens. They are built-ins, so they claim

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/mike-diff/sesh/agent"
 )
@@ -71,6 +73,52 @@ func loadBlob(hash string) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("blob %s not found", hash)
+}
+
+// blobGCMinAge is how old an unreferenced blob must be before gcBlobs will
+// delete it. The floor exists to avoid racing a blob another live instance just
+// pasted and stored but has not yet written a session for; an hour is far longer
+// than any save latency, so a still-referenced blob is never mistaken for trash.
+const blobGCMinAge = time.Hour
+
+// gcBlobs deletes orphaned image blobs: those referenced by no session and older
+// than blobGCMinAge. It scans every session (sealed ones included, so a blob a
+// sealed transcript still references is never collected), builds the set of live
+// hashes, and removes only blobs that are both unreferenced and past the age
+// floor. It is deliberately conservative: deleting a live blob (a missing image
+// the user can no longer resolve) is worse than leaving a small orphan behind, so
+// every error is skipped rather than fatal and recent files are always kept.
+func gcBlobs() {
+	referenced := map[string]bool{}
+	for _, s := range allSessions() {
+		for _, t := range s.Turns {
+			for _, im := range t.Images {
+				if im.Hash != "" {
+					referenced[im.Hash] = true
+				}
+			}
+		}
+	}
+	entries, err := os.ReadDir(blobsDir())
+	if err != nil {
+		return // no blobs dir yet, or unreadable: nothing to collect
+	}
+	cutoff := time.Now().Add(-blobGCMinAge)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		hash := strings.TrimSuffix(name, filepath.Ext(name))
+		if referenced[hash] {
+			continue // a session still points at this blob
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue // unreadable, or freshly written: leave it, a save may be in flight
+		}
+		os.Remove(filepath.Join(blobsDir(), name)) // best-effort; an error just leaves the orphan
+	}
 }
 
 // rehydrateImages repopulates the in-memory Data of any image whose bytes were

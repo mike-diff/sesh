@@ -1034,6 +1034,26 @@ func (t *tuiConsole) captureImage() {
 		t.note("can't paste image: " + err.Error())
 		return
 	}
+	t.captureRaw(raw)
+}
+
+// captureImageQuiet is the Cmd+V empty-paste path: it captures an image only
+// when one is actually on the clipboard and emits nothing otherwise, so a plain
+// empty paste (no image) produces no output. Once an image is found it runs the
+// same gating, store, and honest-note path as Ctrl+V.
+func (t *tuiConsole) captureImageQuiet() {
+	raw, _, err := readClipboardImage()
+	if err != nil {
+		return // no image (or no tool): stay silent, this was an ordinary empty paste
+	}
+	t.captureRaw(raw)
+}
+
+// captureRaw is the shared tail of both capture paths once raw clipboard bytes
+// are in hand: vision gating, downscale, blob store, the atomic [image-N] token,
+// and the honest note. It takes the mutex itself for the buffer edit (the caller
+// released it so the transcript writes can relock).
+func (t *tuiConsole) captureRaw(raw []byte) {
 	if t.visionOK != nil && !t.visionOK() {
 		t.note("the current model can't see images; switch with /model, or set \"vision\": true on the provider profile if it does")
 		return
@@ -1109,14 +1129,34 @@ func (t *tuiConsole) takeImages() []agent.Image {
 // arrows move the cursor or walk history, home/end/delete edit, Shift+Enter
 // inserts a newline (CSI 13;2u from the Kitty disambiguation flag, or CSI
 // 27;2;13~ from terminals/tmux in extended-keys mode), and a bracketed-paste
-// begin marker pulls the whole paste into the buffer.
+// begin marker pulls the whole paste into the buffer. Alt+V (ESC then a plain
+// v) is the Ctrl+V fallback for terminals like Windows Terminal that swallow
+// Ctrl+V for their own paste; it runs the same image-capture pipeline.
 func (t *tuiConsole) handleEscape() {
+	// Peek the byte after ESC: a plain v is Alt+V, not a CSI/SS3 introducer, so
+	// route it to the capture pipeline before the sequence decoder. The capture
+	// writes to the transcript (Print relocks), so it must run unlocked, exactly
+	// like the Ctrl+V case; the caller already released the mutex for handleEscape.
+	if r, more := t.nextRune(); more {
+		if r == 'v' || r == 'V' {
+			t.captureImage()
+			return
+		}
+		t.unget(r) // not Alt+V: hand the introducer back to the CSI/SS3 decoder
+	}
 	params, final, ok := t.readCSI()
 	if !ok {
 		return
 	}
 	if final == '~' && params == "200" { // bracketed paste
 		content := t.readPaste()
+		if len(content) == 0 {
+			// macOS Cmd+V often delivers an image paste as an empty bracketed
+			// paste. Try a quiet image capture: it acts only when an image is
+			// actually on the clipboard, so an ordinary empty paste stays silent.
+			t.captureImageQuiet()
+			return
+		}
 		t.mu.Lock()
 		t.insertPasteLocked(content)
 		t.mu.Unlock()

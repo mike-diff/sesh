@@ -45,6 +45,13 @@ CONTINUITY (infinite sessions)
 
 FLAGS
 ` + flagDefaults() + `
+INPUT KEYS (interactive footer TUI)
+  Ctrl-V (Alt-V fallback)      paste a clipboard image, shown inline as [image-N]
+                               and sent to a vision-capable model (Alt-V for
+                               terminals that swallow Ctrl-V, like Windows Terminal)
+  Shift-Enter, Ctrl-J, \+Enter newline; Enter submits
+  Esc                          cancel the running turn (type to steer at the next step)
+
 SESSION COMMANDS (interactive; tab completes)
   /provider [add|remove|name]  pick, add (wizard), remove, or switch providers
   /model [id|#|substring]      pick/switch models, or add a custom one; window retunes
@@ -77,7 +84,9 @@ MODEL TOOLS (what the agent inside can do)
                                reaped when the session exits.
 
 FILES AND MODS (project .sesh/ overrides global ~/.sesh/)
-  providers.json               named provider profiles (managed by /provider)
+  providers.json               named provider profiles (managed by /provider);
+                               a profile's "vision": true|false overrides whether
+                               its model accepts pasted images (default: by name)
   credentials.json, key        AES-256-GCM encrypted API keys (0600)
   SYSTEM.md / APPEND_SYSTEM.md replace / extend the system prompt
   prompts/<name>.md            override model-facing templates: brief, judge,

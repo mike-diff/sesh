@@ -64,7 +64,7 @@ Then just talk to it:
 -> Hey sesh, tell me about yourself, how you work, what you can do and what are mods.
 ```
 
-Submit `/help` for the key reference. When stdin or stdout is a pipe it falls back to plain line input. Type `exit` to quit; sessions autosave to `~/.sesh/sessions/`.
+Submit `/help` for the key reference. Ctrl-V (or Alt-V where a terminal swallows Ctrl-V) pastes a clipboard image, shown inline as `[image-N]` and sent to a vision-capable model. When stdin or stdout is a pipe it falls back to plain line input. Type `exit` to quit; sessions autosave to `~/.sesh/sessions/`.
 
 ## The tools
 

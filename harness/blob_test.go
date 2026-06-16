@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mike-diff/sesh/agent"
 )
@@ -158,5 +159,78 @@ func TestRehydrateDropsOnlyMissing(t *testing.T) {
 	}
 	if history[0].Images[0].Hash != hash || string(history[0].Images[0].Data) != string(good) {
 		t.Fatalf("the recoverable image must survive with its bytes: %+v", history[0].Images[0])
+	}
+}
+
+// TestGCBlobsDeletesOnlyOldOrphans: gcBlobs must remove only blobs that are both
+// unreferenced by any session AND older than the age floor. A referenced blob
+// (even from a sealed session) and a recently-written unreferenced blob both
+// survive. Breakers: drop the referenced-hash check and the referenced blob is
+// deleted; drop the age floor and the fresh orphan is deleted.
+func TestGCBlobsDeletesOnlyOldOrphans(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// A live session and a sealed one, each referencing one blob. Scanning sealed
+	// sessions matters: a handed-off transcript still resolves its images.
+	liveHash, err := storeBlob([]byte("live-session image bytes"), "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealedHash, err := storeBlob([]byte("sealed-session image bytes"), "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := &Session{ID: "live-1", Created: time.Now(),
+		Turns: []agent.Turn{{Role: "user", Text: "see this",
+			Images: []agent.Image{{Hash: liveHash, MediaType: "image/png"}}}}}
+	sealed := &Session{ID: "sealed-1", Child: "live-1", Created: time.Now(),
+		Turns: []agent.Turn{{Role: "user", Text: "and this",
+			Images: []agent.Image{{Hash: sealedHash, MediaType: "image/png"}}}}}
+	if err := live.save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sealed.save(); err != nil {
+		t.Fatal(err)
+	}
+	// Age the referenced blobs past the floor too, so only the referenced-hash
+	// check (not the age floor) can save them: that makes the check load-bearing.
+	aged := time.Now().Add(-2 * blobGCMinAge)
+	for _, h := range []string{liveHash, sealedHash} {
+		if err := os.Chtimes(blobPath(h, "image/png"), aged, aged); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// An old orphan (no session points at it, aged past the floor): collectible.
+	oldHash, err := storeBlob([]byte("nobody references these bytes anymore"), "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPath := blobPath(oldHash, "image/png")
+	if err := os.Chtimes(oldPath, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh orphan (unreferenced but just written): kept, the floor protects a
+	// blob whose session may not be saved yet.
+	freshHash, err := storeBlob([]byte("just pasted, no session saved yet"), "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshPath := blobPath(freshHash, "image/png")
+
+	gcBlobs()
+
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("old unreferenced blob must be deleted (err=%v)", err)
+	}
+	for name, path := range map[string]string{
+		"live-referenced":   blobPath(liveHash, "image/png"),
+		"sealed-referenced": blobPath(sealedHash, "image/png"),
+		"fresh-orphan":      freshPath,
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("%s blob must survive gc: %v", name, err)
+		}
 	}
 }
