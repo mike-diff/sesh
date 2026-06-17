@@ -85,8 +85,9 @@ MODEL TOOLS (what the agent inside can do)
 
 FILES AND MODS (project .sesh/ overrides global ~/.sesh/)
   providers.json               named provider profiles (managed by /provider);
-                               a profile's "vision": true|false overrides whether
-                               its model accepts pasted images (default: by name)
+                               "vision": true|false overrides image support (default
+                               by name); "no_tools": true sends no tools (tools-less
+                               models, e.g. local vision models)
   credentials.json, key        AES-256-GCM encrypted API keys (0600)
   SYSTEM.md / APPEND_SYSTEM.md replace / extend the system prompt
   prompts/<name>.md            override model-facing templates: brief, judge,

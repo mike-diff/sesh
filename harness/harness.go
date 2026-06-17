@@ -206,6 +206,13 @@ func Main() {
 	}
 	modTools, modNotes := loadToolMods(taken)
 	tools = append(tools, modTools...)
+	// A tools-less model (e.g. a local vision model) rejects any tools array, so
+	// the no_tools dial drops every tool: the built-ins and engines/mods here, and
+	// the task/recall pair each mode wires in below.
+	noTools := pcfg.Providers[spec.name].NoTools
+	if noTools {
+		tools = nil
+	}
 	for _, n := range append(engNotes, modNotes...) {
 		fmt.Fprintf(os.Stderr, "%s%s%s\n", yellow, n, reset)
 	}
@@ -256,9 +263,11 @@ func Main() {
 		}
 		pg := budgetGate(*maxTools, counted) // first turn's budget; drive refreshes per iteration
 		sessOf := func() *Session { return r.sess }
-		tools = append(tools,
-			taskTool(func() agent.Provider { return r.p }, sessOf, 1, *unsafePaths, pg, nil),
-			recallTool(sessOf))
+		if !noTools {
+			tools = append(tools,
+				taskTool(func() agent.Provider { return r.p }, sessOf, 1, *unsafePaths, pg, nil),
+				recallTool(sessOf))
+		}
 		if r.preflight(*printMode) {
 			os.Exit(1) // the message can never fit; nothing was sent
 		}
@@ -359,9 +368,11 @@ func Main() {
 	// applies to later spawns, and child token usage lands in the totals
 	// (accountChild shares acctMu because parallel children report concurrently).
 	sessOf := func() *Session { return r.sess }
-	tools = append(tools,
-		taskTool(func() agent.Provider { return r.p }, sessOf, 1, *unsafePaths, g, r.accountChild),
-		recallTool(sessOf))
+	if !noTools {
+		tools = append(tools,
+			taskTool(func() agent.Provider { return r.p }, sessOf, 1, *unsafePaths, g, r.accountChild),
+			recallTool(sessOf))
+	}
 	// The TUI completes commands, provider names, and model ids on tab, and
 	// reaps owned processes if a signal tears the session down.
 	if t, ok := con.(*tuiConsole); ok {

@@ -7,6 +7,7 @@ package harness
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -19,13 +20,17 @@ const maxEdge = 1568
 // decodeAndDownscale decodes raw image bytes, scales them so the longest edge is
 // at most maxEdge, and re-encodes in the source format. It returns the encoded
 // bytes, their media type, and the (possibly reduced) dimensions. An image that
-// is already within the cap is re-encoded unchanged. Bytes the stdlib cannot
-// decode pass through verbatim with a detected media type and zero dimensions,
-// so an undecodable paste still has a media type to send.
+// is already within the cap is re-encoded unchanged. A format the stdlib cannot
+// decode but can still identify (e.g. WEBP) passes through verbatim for the API
+// to handle; bytes that cannot even be identified return an error.
 func decodeAndDownscale(raw []byte) (out []byte, mediaType string, w, h int, err error) {
 	src, format, derr := image.Decode(bytes.NewReader(raw))
 	if derr != nil {
-		return raw, detectMediaType(raw), 0, 0, nil
+		mt := detectMediaType(raw)
+		if mt == "application/octet-stream" {
+			return nil, "", 0, 0, errors.New("unsupported image format (PNG or JPEG)")
+		}
+		return raw, mt, 0, 0, nil
 	}
 	mediaType = "image/" + format
 	if format == "jpeg" {

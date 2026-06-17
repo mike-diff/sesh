@@ -308,6 +308,26 @@ func TestOpenAIImageContent(t *testing.T) {
 	}
 }
 
+// TestOpenAIOmitsToolsWhenNone: with no tools the request body carries no "tools"
+// field, so a tools-less model (a local vision model via the no_tools profile
+// dial) is not rejected. Breaker: drop the len(toolsParam)>0 guard and an empty
+// "tools" appears in the body.
+func TestOpenAIOmitsToolsWhenNone(t *testing.T) {
+	var body map[string]any
+	var hdr http.Header
+	srv := sseServer(t, &body, &hdr, `{"choices":[{"delta":{"content":"ok"}}]}`, `[DONE]`)
+	defer srv.Close()
+
+	p := OpenAI{BaseURL: srv.URL, Key: "k", Model: "m"}
+	if _, err := p.Chat(context.Background(), "SYS",
+		[]agent.Turn{{Role: "user", Text: "hi"}}, nil, func(string) {}, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["tools"]; ok {
+		t.Fatalf("with no tools the body must omit the tools field, got %v", body["tools"])
+	}
+}
+
 // TestListModelInfos: discovery parses the context-length field names the
 // wild uses, and models without one report 0.
 func TestListModelInfos(t *testing.T) {

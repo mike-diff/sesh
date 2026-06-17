@@ -37,6 +37,10 @@ type Profile struct {
 	// images: nil leaves it to the model-name heuristic, true or false forces it.
 	// It is the escape hatch named in the paste-blocked guidance.
 	Vision *bool `json:"vision,omitempty"`
+	// NoTools, when true, sends no tool definitions to this profile's model. A
+	// tools-less model (such as a local vision model used only to read images)
+	// rejects any tools array, so the agent runs as plain conversation.
+	NoTools bool `json:"no_tools,omitempty"`
 }
 
 // ProvidersConfig is a parsed providers.json: a set of named profiles and the

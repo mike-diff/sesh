@@ -116,3 +116,13 @@ func TestDownscaleClampsTinyEdge(t *testing.T) {
 		t.Fatalf("clamped output must be a real 1px-tall png: err=%v cfg=%+v", err, cfg)
 	}
 }
+
+// TestDecodeRejectsUnknown: bytes that are neither decodable nor identifiable as a
+// known image format are rejected with an error, so an octet-stream blob is never
+// stored or sent to the API. Breaker: pass unidentifiable bytes through with an
+// octet-stream type instead of erroring, and an unsupported blob reaches the wire.
+func TestDecodeRejectsUnknown(t *testing.T) {
+	if _, _, _, _, err := decodeAndDownscale([]byte("this is plainly not an image")); err == nil {
+		t.Fatal("unidentifiable bytes must be rejected, not passed through")
+	}
+}
