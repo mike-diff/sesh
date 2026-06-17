@@ -5,7 +5,59 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/mike-diff/sesh/agent"
 )
+
+// TestSegmentsImageRenumbering: image tokens display as [image-K] by order of
+// appearance, independent of their absolute rune index, so deleting an earlier
+// image renumbers the rest. The token rune stays the absolute images-slice index
+// for byte lookup. Breaker: number the label off (r-imageBase)+1 instead of the
+// running appearance count and the second image reads [image-3] not [image-2].
+func TestSegmentsImageRenumbering(t *testing.T) {
+	tc := &tuiConsole{images: make([]agent.Image, 3)}
+	// Buffer holds tokens for absolute indices 0 and 2 (index 1 was "deleted":
+	// its token is gone from the buffer but the slice is not compacted).
+	tc.buf = []rune{'a', imageBase + 0, 'b', imageBase + 2}
+	if got := strings.Join(tc.segments(), ""); got != "a[image-1]b[image-2]" {
+		t.Fatalf("renumber by appearance: %q, want %q", got, "a[image-1]b[image-2]")
+	}
+}
+
+// TestComposeMessageOrdersImagesAndLabels: composeMessage returns the ordered
+// images a buffer carries and writes a [image-K] label for each (never the raw
+// private-use rune), with snippets expanded inline. The image order follows the
+// buffer, not the absolute index. Breaker: append t.images by absolute index
+// rather than in buffer order and the returned images come back reversed.
+func TestComposeMessageOrdersImagesAndLabels(t *testing.T) {
+	imgs := []agent.Image{{Hash: "h0"}, {Hash: "h1"}}
+	tc := &tuiConsole{images: imgs, snippets: []string{"BIG"}}
+	// Appearance order is index 1 then index 0; a snippet token sits between them.
+	tc.buf = []rune{'s', 'e', 'e', ' ', imageBase + 1, ' ', snippetBase + 0, ' ', imageBase + 0}
+	text, got := tc.composeMessage()
+	if text != "see [image-1] BIG [image-2]" {
+		t.Fatalf("text = %q, want %q", text, "see [image-1] BIG [image-2]")
+	}
+	if strings.ContainsRune(text, imageBase) {
+		t.Fatalf("text leaked a raw image token rune: %q", text)
+	}
+	if len(got) != 2 || got[0].Hash != "h1" || got[1].Hash != "h0" {
+		t.Fatalf("images must follow buffer order, got %+v", got)
+	}
+}
+
+// TestTakeImagesDrains: takeImages returns the last submit's images once and
+// then nothing, so a message's images are attached exactly once. Breaker: drop
+// the clear in takeImages and a second turn re-attaches the prior images.
+func TestTakeImagesDrains(t *testing.T) {
+	tc := &tuiConsole{submitImages: []agent.Image{{Hash: "h0"}}}
+	if got := tc.takeImages(); len(got) != 1 {
+		t.Fatalf("first take must return the submit's images, got %d", len(got))
+	}
+	if got := tc.takeImages(); got != nil {
+		t.Fatalf("second take must be empty, got %d", len(got))
+	}
+}
 
 // TestSegWidthIgnoresANSI: a segment carrying highlight SGR measures by its
 // visible width, so the input window math stays aligned. Breaker: stop

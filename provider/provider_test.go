@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -195,6 +196,135 @@ func TestOpenAICachedTokens(t *testing.T) {
 	}
 	if reply.Usage.Input != 100 || reply.Usage.CacheRead != 900 {
 		t.Fatalf("usage %+v, want Input 100 (uncached only) and CacheRead 900", reply.Usage)
+	}
+}
+
+// TestAnthropicImageContent: a user Turn carrying an Image serializes its
+// content as a block array (a text block when there is text, then a bare-base64
+// image block), while a text-only turn keeps the plain-string content exactly as
+// before. Breaker: remove the len(t.Images)>0 branch and the image turn falls
+// through to a string content with no image block, failing the block assertions.
+func TestAnthropicImageContent(t *testing.T) {
+	var body map[string]any
+	var hdr http.Header
+	srv := sseServer(t, &body, &hdr,
+		`{"type":"message_start","message":{"usage":{"input_tokens":1}}}`,
+	)
+	defer srv.Close()
+
+	p := Anthropic{BaseURL: srv.URL, Key: "k", Model: "m"}
+	_, err := p.Chat(context.Background(), "SYS",
+		[]agent.Turn{
+			{Role: "user", Text: "plain"},
+			{Role: "user", Text: "look", Images: []agent.Image{
+				{MediaType: "image/png", Data: []byte("PNGBYTES")},
+			}},
+		}, nil, func(string) {}, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := body["messages"].([]any)
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages", len(msgs))
+	}
+
+	// text-only turn: content stays a bare string (no regression)
+	if c := msgs[0].(map[string]any)["content"]; c != "plain" {
+		t.Fatalf("text-only content must stay the bare string, got %T %v", c, c)
+	}
+
+	// image turn: content is a block array, text block first, then image block
+	blocks := msgs[1].(map[string]any)["content"].([]any)
+	if len(blocks) != 2 {
+		t.Fatalf("image turn should have a text block and an image block, got %v", blocks)
+	}
+	if tb := blocks[0].(map[string]any); tb["type"] != "text" || tb["text"] != "look" {
+		t.Fatalf("first block must carry the text: %v", tb)
+	}
+	im := blocks[1].(map[string]any)
+	if im["type"] != "image" {
+		t.Fatalf("second block must be an image: %v", im)
+	}
+	src := im["source"].(map[string]any)
+	if src["type"] != "base64" || src["media_type"] != "image/png" {
+		t.Fatalf("image source shape: %v", src)
+	}
+	// data is BARE base64, no data: URI prefix
+	want := base64.StdEncoding.EncodeToString([]byte("PNGBYTES"))
+	if src["data"] != want {
+		t.Fatalf("image data must be bare base64 %q, got %q", want, src["data"])
+	}
+}
+
+// TestOpenAIImageContent: the OpenAI adapter emits a parts array with a data-URI
+// image_url part for an image turn, and keeps plain-string content for a
+// text-only turn. Breaker: remove the len(t.Images)>0 branch and the image turn
+// serializes as a bare string with no image_url part.
+func TestOpenAIImageContent(t *testing.T) {
+	var body map[string]any
+	var hdr http.Header
+	srv := sseServer(t, &body, &hdr,
+		`{"choices":[{"delta":{"content":"ok"}}]}`,
+		`[DONE]`,
+	)
+	defer srv.Close()
+
+	p := OpenAI{BaseURL: srv.URL, Key: "k", Model: "m"}
+	_, err := p.Chat(context.Background(), "SYS",
+		[]agent.Turn{
+			{Role: "user", Text: "plain"},
+			{Role: "user", Text: "look", Images: []agent.Image{
+				{MediaType: "image/jpeg", Data: []byte("JPGBYTES")},
+			}},
+		}, nil, func(string) {}, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := body["messages"].([]any)
+	// msgs[0] is the system message; the two user turns follow
+	if len(msgs) != 3 {
+		t.Fatalf("got %d messages", len(msgs))
+	}
+	if c := msgs[1].(map[string]any)["content"]; c != "plain" {
+		t.Fatalf("text-only content must stay the bare string, got %T %v", c, c)
+	}
+
+	parts := msgs[2].(map[string]any)["content"].([]any)
+	if len(parts) != 2 {
+		t.Fatalf("image turn should have a text part and an image_url part, got %v", parts)
+	}
+	if tp := parts[0].(map[string]any); tp["type"] != "text" || tp["text"] != "look" {
+		t.Fatalf("first part must carry the text: %v", tp)
+	}
+	ip := parts[1].(map[string]any)
+	if ip["type"] != "image_url" {
+		t.Fatalf("second part must be image_url: %v", ip)
+	}
+	wantURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("JPGBYTES"))
+	if got := ip["image_url"].(map[string]any)["url"]; got != wantURL {
+		t.Fatalf("image_url must be a data URI %q, got %q", wantURL, got)
+	}
+}
+
+// TestOpenAIOmitsToolsWhenNone: with no tools the request body carries no "tools"
+// field, so a tools-less model (a local vision model via the no_tools profile
+// dial) is not rejected. Breaker: drop the len(toolsParam)>0 guard and an empty
+// "tools" appears in the body.
+func TestOpenAIOmitsToolsWhenNone(t *testing.T) {
+	var body map[string]any
+	var hdr http.Header
+	srv := sseServer(t, &body, &hdr, `{"choices":[{"delta":{"content":"ok"}}]}`, `[DONE]`)
+	defer srv.Close()
+
+	p := OpenAI{BaseURL: srv.URL, Key: "k", Model: "m"}
+	if _, err := p.Chat(context.Background(), "SYS",
+		[]agent.Turn{{Role: "user", Text: "hi"}}, nil, func(string) {}, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["tools"]; ok {
+		t.Fatalf("with no tools the body must omit the tools field, got %v", body["tools"])
 	}
 }
 

@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -151,6 +152,122 @@ func TestRecallAcrossChain(t *testing.T) {
 	out, isErr = tool.Run(context.Background(), json.RawMessage(`{"pattern":"needle"}`))
 	if isErr || !strings.Contains(out, "needle") || !strings.Contains(out, "could not be loaded") {
 		t.Fatalf("broken chain handling: %q err=%v", out, isErr)
+	}
+}
+
+// TestSessionJSONHasNoImageBytes: an image turn saved the way session.save
+// marshals it carries the hash and metadata but never the base64 of Data, so the
+// session file stays lean. Breaker: drop the json:"-" tag on Image.Data and the
+// marshalled JSON contains the encoded bytes.
+func TestSessionJSONHasNoImageBytes(t *testing.T) {
+	data := []byte("PRETEND-IMAGE-BYTES-THAT-MUST-NOT-LEAK")
+	sess := &Session{
+		ID:    "img-sess",
+		Turns: []agent.Turn{{Role: "user", Text: "look", Images: []agent.Image{{Hash: "abc123", MediaType: "image/png", Width: 100, Height: 80, Data: data}}}},
+	}
+
+	b, err := json.MarshalIndent(sess, "", "  ") // exactly how session.save marshals
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+
+	if !strings.Contains(out, "abc123") {
+		t.Fatal("the session JSON must keep the image hash as the reference")
+	}
+	if strings.Contains(out, base64.StdEncoding.EncodeToString(data)) {
+		t.Fatal("the session JSON must not contain the base64 of the image bytes")
+	}
+	if strings.Contains(out, string(data)) {
+		t.Fatal("the raw image bytes must not appear in the session JSON")
+	}
+}
+
+// TestHandoffCarriesImageRef: the verbatim tail copied into a successor session
+// carries the image reference (hash/metadata) but not the bytes, and the
+// successor resolves the bytes from the shared blob store via rehydrateImages.
+// Breaker: exclude Images from the carried turn and the successor has no image
+// ref to resolve.
+func TestHandoffCarriesImageRef(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	bytesOnDisk := []byte("the shared blob the successor will resolve")
+	hash, err := storeBlob(bytesOnDisk, "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A dying session whose tail is a user turn bearing an image with no Data
+	// (the on-disk form: bytes live in the blob store, not the turn).
+	dying := []agent.Turn{
+		{Role: "user", Text: "older"}, {Role: "assistant", Text: "ok"},
+		{Role: "user", Text: "what is in this screenshot?",
+			Images: []agent.Image{{Hash: hash, MediaType: "image/png", Width: 100, Height: 80}}},
+		{Role: "assistant", Text: "a chart"},
+	}
+
+	tail := verbatimTail(dying, 1_000_000)
+	old := &Session{ID: "dying-1", Cwd: "/w"}
+	next := seedChain(old, "BRIEF", "entry", "branch: main", tail)
+
+	// the carried turn keeps the reference, not the bytes
+	var imgTurn *agent.Turn
+	for i := range next.Turns {
+		if len(next.Turns[i].Images) > 0 {
+			imgTurn = &next.Turns[i]
+			break
+		}
+	}
+	if imgTurn == nil {
+		t.Fatal("the successor must carry the image-bearing turn from the tail")
+	}
+	if imgTurn.Images[0].Hash != hash {
+		t.Fatalf("the carried image must keep its hash ref: %q", imgTurn.Images[0].Hash)
+	}
+	if len(imgTurn.Images[0].Data) != 0 {
+		t.Fatal("the seed must carry a reference, not the bytes")
+	}
+
+	// the successor resolves the bytes from the shared blob store
+	rehydrateImages(next.Turns)
+	if string(imgTurn.Images[0].Data) != string(bytesOnDisk) {
+		t.Fatalf("the successor must resolve Data from the shared blob store: got %q", imgTurn.Images[0].Data)
+	}
+}
+
+// TestApproxTokensCountsImages: a turn carrying an image reports more tokens than
+// the same turn without it, so the verbatim-tail budget accounts for image cost.
+// Breaker: omit the image term in approxTokens and the two counts are equal.
+func TestApproxTokensCountsImages(t *testing.T) {
+	withText := []agent.Turn{{Role: "user", Text: "describe this"}}
+	withImage := []agent.Turn{{Role: "user", Text: "describe this",
+		Images: []agent.Image{{Hash: "h", MediaType: "image/png", Width: 1456, Height: 819}}}}
+
+	plain := approxTokens(withText)
+	withImg := approxTokens(withImage)
+	if withImg <= plain {
+		t.Fatalf("an image must add to the token estimate: text=%d image=%d", plain, withImg)
+	}
+	if want := estimateImageTokens(1456, 819); withImg-plain != want {
+		t.Fatalf("the image term must equal its patch estimate: delta=%d want=%d", withImg-plain, want)
+	}
+}
+
+// TestRenderTranscriptNotesImages: a user turn with images gets a one-line,
+// byte-free note in the brief transcript so the brief writer knows an image
+// existed. Breaker: skip the note in the user arm and the dimensions/media type
+// never reach the transcript.
+func TestRenderTranscriptNotesImages(t *testing.T) {
+	h := []agent.Turn{{Role: "user", Text: "compare these",
+		Images: []agent.Image{
+			{Hash: "a", MediaType: "image/png", Width: 1456, Height: 819},
+			{Hash: "b", MediaType: "image/jpeg", Width: 800, Height: 600},
+		}}}
+	got := renderTranscript(h, 100)
+
+	for _, want := range []string{"USER: compare these", "2 image(s)", "image/png 1456x819", "image/jpeg 800x600"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("transcript missing %q:\n%s", want, got)
+		}
 	}
 }
 

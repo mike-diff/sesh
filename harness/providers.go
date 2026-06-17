@@ -33,6 +33,14 @@ type Profile struct {
 	// CustomModel is one user-added model the endpoint did not list, remembered
 	// per provider so it persists and stays in /model.
 	CustomModel string `json:"custom_model,omitempty"`
+	// Vision is the tri-state override for whether this profile's model can see
+	// images: nil leaves it to the model-name heuristic, true or false forces it.
+	// It is the escape hatch named in the paste-blocked guidance.
+	Vision *bool `json:"vision,omitempty"`
+	// NoTools, when true, sends no tool definitions to this profile's model. A
+	// tools-less model (such as a local vision model used only to read images)
+	// rejects any tools array, so the agent runs as plain conversation.
+	NoTools bool `json:"no_tools,omitempty"`
 }
 
 // ProvidersConfig is a parsed providers.json: a set of named profiles and the

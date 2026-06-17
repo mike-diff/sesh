@@ -1,7 +1,8 @@
-// Clipboard support for /copy: put text on the system clipboard from a terminal
-// app, with no third-party dependency. Two independent paths are used so the
-// text lands whether sesh runs locally or over SSH, and whether or not the
-// terminal allows programmatic clipboard writes.
+// Clipboard support, with no third-party dependency. Writing text (for /copy)
+// uses two independent paths so it lands whether sesh runs locally or over SSH,
+// and whether or not the terminal allows programmatic clipboard writes. Reading
+// an image (for Ctrl-V paste) shells out to a platform tool, the read-direction
+// twin of the write path.
 package harness
 
 import (
@@ -11,6 +12,76 @@ import (
 	"runtime"
 	"strings"
 )
+
+// readClipboardImage reads an image off the system clipboard by shelling out to
+// the first per-platform tool found on PATH, the read-direction twin of
+// localCopy. It returns the raw image bytes and a media type. A tool that runs
+// but yields nothing means no image is on the clipboard; no tool on PATH names
+// what to install. It never returns nil error with empty data, so the caller
+// always has something honest to show the user.
+func readClipboardImage() (data []byte, mediaType string, err error) {
+	tools := imageReadTools()
+	found := false
+	for _, tool := range tools {
+		if _, lerr := exec.LookPath(tool.cmd[0]); lerr != nil {
+			continue
+		}
+		found = true
+		out, rerr := exec.Command(tool.cmd[0], tool.cmd[1:]...).Output()
+		if rerr != nil || len(out) == 0 {
+			continue // wrong selection type, or nothing of this type on the clipboard
+		}
+		return out, tool.mediaType, nil
+	}
+	if !found {
+		return nil, "", fmt.Errorf("%s", missingImageToolHint())
+	}
+	return nil, "", fmt.Errorf("no image on the clipboard")
+}
+
+// imageTool is one clipboard image reader: the command to run and the media
+// type its output carries.
+type imageTool struct {
+	cmd       []string
+	mediaType string
+}
+
+// imageReadTools is the per-platform list of clipboard image readers, in
+// preference order. Each reads the clipboard image to stdout.
+func imageReadTools() []imageTool {
+	switch runtime.GOOS {
+	case "darwin":
+		// AppleScript pulls PNG data off the clipboard and writes the raw bytes
+		// to stdout; there is no pbpaste flag for image data.
+		return []imageTool{{
+			cmd:       []string{"osascript", "-e", "set the clipboard to (the clipboard as «class PNGf»)", "-e", "get the clipboard as «class PNGf»"},
+			mediaType: "image/png",
+		}}
+	case "windows":
+		return []imageTool{{
+			cmd:       []string{"powershell", "-NoProfile", "-Command", "$img = Get-Clipboard -Format Image; if ($img) { $ms = New-Object System.IO.MemoryStream; $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); [Console]::OpenStandardOutput().Write($ms.ToArray(), 0, $ms.Length) }"},
+			mediaType: "image/png",
+		}}
+	default: // linux, the BSDs
+		return []imageTool{
+			{cmd: []string{"wl-paste", "--type", "image/png"}, mediaType: "image/png"},                           // Wayland
+			{cmd: []string{"xclip", "-selection", "clipboard", "-t", "image/png", "-o"}, mediaType: "image/png"}, // X11
+		}
+	}
+}
+
+// missingImageToolHint names the tool a user should install to paste images,
+// per platform, so a failed read points at the fix rather than a dead end.
+func missingImageToolHint() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "osascript not found; it ships with macOS"
+	case "windows":
+		return "powershell not found to read the clipboard image"
+	default:
+		return "install wl-clipboard or xclip to paste images"
+	}
+}
 
 // osc52 is the terminal "set clipboard" escape sequence: the terminal itself
 // base64-decodes the payload and stores it, so it reaches the clipboard even

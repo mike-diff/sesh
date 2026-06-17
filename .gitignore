@@ -11,3 +11,5 @@
 .claude/
 .pi/
 .cursor/
+# Claude Code agent context (ephemeral)
+.context/
