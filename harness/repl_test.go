@@ -614,7 +614,8 @@ func TestStatusTextNoProvider(t *testing.T) {
 // never silently sent to a model that cannot read it. Breaker: default the
 // unknown case to true and "qwen2.5-coder" is wrongly called vision-capable.
 func TestModelSupportsVision(t *testing.T) {
-	for _, name := range []string{"claude-opus-4", "gpt-4o", "GPT-4.1", "gemini-1.5-pro", "pixtral-12b", "qwen2-vl", "glm-4.6v"} {
+	for _, name := range []string{"claude-opus-4", "gpt-4o", "GPT-4.1", "gemini-1.5-pro", "pixtral-12b",
+		"qwen2-vl", "qwen2.5vl:3b", "llama3.2-vision", "moondream", "minicpm-v", "glm-4.6v"} {
 		if !modelSupportsVision(name) {
 			t.Fatalf("%q should be vision-capable", name)
 		}

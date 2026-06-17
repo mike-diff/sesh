@@ -39,6 +39,9 @@ func decodeAndDownscale(raw []byte) (out []byte, mediaType string, w, h int, err
 	if longest := max(sw, sh); longest > maxEdge {
 		dw = sw * maxEdge / longest
 		dh = sh * maxEdge / longest
+		// A very long, thin image rounds the short edge to zero; keep at least
+		// one pixel so the re-encode produces a real image, not an empty one.
+		dw, dh = max(dw, 1), max(dh, 1)
 		dst = scale(src, dw, dh)
 	}
 

@@ -205,7 +205,8 @@ func modelSupportsVision(name string) bool {
 	name = strings.ToLower(name)
 	for _, marker := range []string{
 		"claude", "gpt-4o", "gpt-4.1", "gpt-5", "o3", "o4",
-		"gemini", "llava", "pixtral", "-vl", "glm-4.5v", "glm-4.6v",
+		"gemini", "llava", "pixtral", "vl", "vision", "moondream",
+		"minicpm-v", "glm-4.5v", "glm-4.6v",
 	} {
 		if strings.Contains(name, marker) {
 			return true

@@ -100,3 +100,19 @@ func TestEstimateImageTokens(t *testing.T) {
 		t.Fatalf("oversized estimate must clamp to %d, got %d", maxEdge, got)
 	}
 }
+
+// TestDownscaleClampsTinyEdge: a long, thin image whose short edge would round to
+// zero on downscale keeps at least one pixel and re-encodes to a real image.
+// Breaker: drop the max(.,1) floor and the short edge is 0, yielding an empty image.
+func TestDownscaleClampsTinyEdge(t *testing.T) {
+	out, _, w, h, err := decodeAndDownscale(pngBytes(t, 2000, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w != maxEdge || h != 1 {
+		t.Fatalf("long-thin image must clamp the short edge to 1, got %dx%d", w, h)
+	}
+	if cfg, err := png.DecodeConfig(bytes.NewReader(out)); err != nil || cfg.Height != 1 {
+		t.Fatalf("clamped output must be a real 1px-tall png: err=%v cfg=%+v", err, cfg)
+	}
+}
