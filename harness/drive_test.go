@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mike-diff/sesh/agent"
 )
@@ -343,6 +344,89 @@ func TestInterruptsQueue(t *testing.T) {
 	if got := in.drain(); len(got) != 0 {
 		t.Fatalf("second drain must be empty, got %v", got)
 	}
+}
+
+// TestInterruptsCancelInGap: an Escape that lands between iterations, after one
+// turn's context is detached and before the next is minted, still aborts the
+// next iteration. Without the sticky-abort window fix the cancel hits a nil
+// context and vanishes, and the freshly minted context comes back live.
+// Breaker: drop the aborted flag (or its consume in turnContext) and the next
+// context is not cancelled.
+func TestInterruptsCancelInGap(t *testing.T) {
+	in := &interrupts{}
+	_, done := in.turnContext() // a turn runs
+	done()                      // the worker detaches its context: in.cancel is now nil
+	in.cancelCurrent()          // Escape in the gap: no live context, but the abort must stick
+
+	ctx, ndone := in.turnContext() // the next iteration mints a fresh context
+	defer ndone()
+	select {
+	case <-ctx.Done():
+		// good: the gap-Escape aborted the next iteration before it could run
+	default:
+		t.Fatal("an Escape between iterations must cancel the next context, not vanish")
+	}
+
+	// The abort is consumed once: a later request after a reset starts live again.
+	in.resetAbort()
+	ctx2, ndone2 := in.turnContext()
+	defer ndone2()
+	select {
+	case <-ctx2.Done():
+		t.Fatal("a fresh request after reset must not inherit a stale abort")
+	default:
+	}
+}
+
+// TestInterruptsResetClearsStaleAbort: an Escape that arrives as a drive is
+// already stopping must not cancel the next request the user types. resetAbort
+// at the top-level boundary clears it. Breaker: drop the resetAbort call and a
+// steer-cancel's aborted flag leaks into the next turn's context.
+func TestInterruptsResetClearsStaleAbort(t *testing.T) {
+	in := &interrupts{}
+	in.cancelCurrent() // an abort with no live turn (the gap, or a steer that just cancelled)
+	in.resetAbort()    // the turn is fully over; the abort is stale
+	ctx, done := in.turnContext()
+	defer done()
+	select {
+	case <-ctx.Done():
+		t.Fatal("a reset must clear the abort so the next context starts live")
+	default:
+	}
+}
+
+// TestInterruptsCtrlCDoublePress: one Ctrl-C warns and does not quit; a second
+// within the window force-quits via cleanup. The spy cleanup is the only
+// observable effect, so os.Exit stays out of the unit (the signal goroutine and
+// the editor hook own the exit at the call boundary). Breaker: drop the
+// double-press check (quit on the first press) and the single-press case sees
+// cleanup fire; drop the double branch and the second press never fires it.
+func TestInterruptsCtrlCDoublePress(t *testing.T) {
+	var cleaned int
+	in := newInterruptsTest(func() { cleaned++ })
+
+	if forced := in.ctrlC(); forced || cleaned != 0 {
+		t.Fatalf("first Ctrl-C must warn, not quit: forced=%v cleaned=%d", forced, cleaned)
+	}
+	if forced := in.ctrlC(); !forced || cleaned != 1 {
+		t.Fatalf("second Ctrl-C within the window must quit via cleanup: forced=%v cleaned=%d", forced, cleaned)
+	}
+
+	// A press after the window lapses is a fresh first press: it warns, not quits.
+	in.last = time.Now().Add(-2 * doublePressWindow)
+	if forced := in.ctrlC(); forced {
+		t.Fatal("a Ctrl-C after the window lapses must warn, not quit")
+	}
+	if cleaned != 1 {
+		t.Fatalf("a lapsed press must not re-fire cleanup: cleaned=%d", cleaned)
+	}
+}
+
+// newInterruptsTest builds an interrupts with the given cleanup spy but without
+// the signal.Notify wiring of the real constructor, so the unit observes ctrlC
+// in isolation (no live OS-signal goroutine, no os.Exit).
+func newInterruptsTest(cleanup func()) *interrupts {
+	return &interrupts{cleanup: cleanup}
 }
 
 // TestDriveJudgeUnavailable: no verdict means no mandate to keep spending.

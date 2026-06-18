@@ -76,7 +76,7 @@ func builtinTools(unsafePaths bool, pm *procManager) []agent.Tool {
 	if pm != nil {
 		tools = append(tools, agent.Tool{
 			Def:      agent.ToolDef{Name: "proc", Description: procToolDesc, Schema: procSchema()},
-			Run:      func(_ context.Context, raw json.RawMessage) (string, bool) { return pm.runTool(raw) },
+			Run:      func(ctx context.Context, raw json.RawMessage) (string, bool) { return pm.runTool(ctx, raw) },
 			Parallel: false,
 		})
 	}

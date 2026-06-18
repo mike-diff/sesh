@@ -36,12 +36,14 @@ var (
 	yellow string
 	red    string
 	green  string
+	cyan   string
 	reset  string
 )
 
 func initColor() {
 	if useColor() {
 		dim, yellow, red, green, reset = "\033[2m", "\033[33m", "\033[31m", "\033[32m", "\033[0m"
+		cyan = "\033[36m"
 	}
 }
 
@@ -417,12 +419,31 @@ func Main() {
 		}()
 	}
 
-	// Escape cancels the running turn; Ctrl-C quits (twice within two seconds,
-	// after restoring the terminal).
+	// Escape cancels the running turn; Ctrl-C quits (twice within two seconds).
+	// The second press is a force quit: restore the terminal first so raw mode
+	// never leaks, then signal owned process groups best-effort with no grace
+	// window, then release the lock. The OS reaps any group that has not died
+	// yet, so a stubborn background process cannot delay the exit. The graceful
+	// reapAll stays on the clean single-quit and normal-exit paths.
 	intr := newInterrupts(func() {
 		con.Close()
-		r.goodbye()
+		if r.procs != nil {
+			r.procs.killAllNow()
+		}
+		releaseLock(r.sess.ID)
 	})
+	// Extended-keys terminals deliver Ctrl-C as a keystroke, not an OS signal, so
+	// the editor needs a console-level hook to reach the same quit semantics. It
+	// is console-level (not per-turn) because Ctrl-C must work at the idle prompt
+	// and during a turn alike; os.Exit stays here at the boundary, never inside
+	// ctrlC, so the editor goroutine that calls this never holds its own mutex.
+	if t, ok := con.(*tuiConsole); ok {
+		t.onCtrlC = func() {
+			if intr.ctrlC() {
+				os.Exit(130)
+			}
+		}
+	}
 
 	say := func(f string, a ...any) {
 		emit("%s  "+f+"%s\n", append(append([]any{dim}, a...), reset)...)
@@ -490,6 +511,7 @@ func Main() {
 			tc.attendTurn(turnAttend{done: doneCh, cancel: intr.cancelCurrent, queue: intr.enqueue})
 			<-doneCh // the worker is finished (attendTurn can also return on EOF); never overlap turns
 			stopSpin()
+			intr.resetAbort()                  // the turn is over; an Escape now is for the next prompt, not a stale carry-over
 			if q := intr.drain(); len(q) > 0 { // typed after the last boundary: run next
 				pending = strings.Join(q, "\n")
 			}
@@ -514,6 +536,7 @@ func Main() {
 type interrupts struct {
 	mu      sync.Mutex
 	cancel  context.CancelFunc // non-nil while a turn is running
+	aborted bool               // an Escape landed between iterations; the next context starts cancelled
 	last    time.Time
 	cleanup func()
 	queued  []string // messages typed during a turn, drained at the next boundary
@@ -529,25 +552,45 @@ func newInterrupts(cleanup func()) *interrupts {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, os.Interrupt)
 	go func() {
+		// Some terminals deliver Ctrl-C as an OS signal; others (extended-keys
+		// mode) deliver it as a keystroke that the editor routes to ctrlC. Both
+		// triggers share this one body, and os.Exit lives at the call boundary so
+		// ctrlC itself stays unit-testable around the spy-observable cleanup.
 		for range sigc {
-			in.mu.Lock()
-			double := time.Since(in.last) < doublePressWindow
-			in.last = time.Now()
-			in.mu.Unlock()
-			if double {
-				in.cleanup()
+			if in.ctrlC() {
 				os.Exit(130)
 			}
-			emit("\n%s  (ctrl-c again to quit; esc cancels the turn)%s\n", yellow, reset)
 		}
 	}()
 	return in
 }
 
-// cancelCurrent aborts the turn in flight, if any (the live editor's Escape).
+// ctrlC applies one Ctrl-C press: a stray press warns, a second within the
+// window force-quits via cleanup. It reports whether this press force-quit so
+// the caller can os.Exit(130) at the boundary, keeping os.Exit out of the unit
+// under test. Both the signal goroutine and the live editor call this.
+func (in *interrupts) ctrlC() bool {
+	in.mu.Lock()
+	double := time.Since(in.last) < doublePressWindow
+	in.last = time.Now()
+	in.mu.Unlock()
+	if double {
+		in.cleanup()
+		return true
+	}
+	emit("\n%s  (ctrl-c again to quit; esc cancels the turn)%s\n", yellow, reset)
+	return false
+}
+
+// cancelCurrent aborts the turn in flight (the live editor's Escape). It also
+// records the abort even when no context is live: between iterations the worker
+// detaches one context before the next is minted, and an Escape in that window
+// would otherwise vanish. The sticky flag makes the next turnContext start
+// already cancelled, so the abort reaches the iteration it was meant for.
 func (in *interrupts) cancelCurrent() {
 	in.mu.Lock()
 	c := in.cancel
+	in.aborted = true
 	in.mu.Unlock()
 	if c != nil {
 		c()
@@ -571,16 +614,32 @@ func (in *interrupts) drain() []string {
 }
 
 // turnContext hands out a cancellable context for one turn and the cleanup
-// that detaches it from the watcher.
+// that detaches it from the watcher. An Escape that arrived between iterations
+// (the sticky aborted flag) cancels the fresh context at once, so the abort is
+// honored by the iteration it was aimed at instead of being dropped in the gap.
 func (in *interrupts) turnContext() (context.Context, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	in.mu.Lock()
 	in.cancel = cancel
+	wasAborted := in.aborted
+	in.aborted = false
 	in.mu.Unlock()
+	if wasAborted {
+		cancel()
+	}
 	return ctx, func() {
 		in.mu.Lock()
 		in.cancel = nil
 		in.mu.Unlock()
 		cancel()
 	}
+}
+
+// resetAbort clears a stale abort once a turn has fully ended, so an Escape that
+// landed as the drive was already stopping cannot cancel the next request the
+// user types. Called at the top-level boundary, not inside a drive cycle.
+func (in *interrupts) resetAbort() {
+	in.mu.Lock()
+	in.aborted = false
+	in.mu.Unlock()
 }

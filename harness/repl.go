@@ -248,7 +248,7 @@ func (r *repl) spin() (stop func()) {
 				r.spinMu.Lock()
 				base := r.spinBase
 				r.spinMu.Unlock()
-				r.con.SetStatus(fmt.Sprintf("%s · working %ds (ctrl-c cancels)", base, secs))
+				r.con.SetStatus(fmt.Sprintf("%s · working %ds (press esc or type /stop to cancel)", base, secs))
 				r.con.SetTitle(fmt.Sprintf("sesh · working %ds", secs))
 			}
 		}
@@ -315,6 +315,7 @@ var slashCommands = []slashCommand{
 	{name: "/compact", run: func(r *repl, _ string) { r.compactCmd() }},
 	{name: "/settings", run: func(r *repl, _ string) { r.settingsCmd() }},
 	{name: "/copy", run: func(r *repl, _ string) { r.copyCmd() }},
+	{name: "/stop", run: func(r *repl, _ string) { r.stopCmd() }},
 	{name: "/help", run: func(r *repl, _ string) { r.helpCmd() }},
 	{name: "/exit", quit: true},
 	{name: "/quit", quit: true},
@@ -404,6 +405,13 @@ func (r *repl) copyCmd() {
 	emit("%s  copied last response to clipboard, %d lines (%s)%s\n\n", dim, 1+strings.Count(text, "\n"), via, reset)
 }
 
+// stopCmd handles /stop typed between turns. The version that aborts a running
+// turn lives in the live editor (a line typed during a turn never reaches this
+// dispatch); here there is nothing to stop, so it only says so.
+func (r *repl) stopCmd() {
+	emit("%s  no turn is running%s\n\n", dim, reset)
+}
+
 // lastAssistantText returns the most recent assistant turn that carried text;
 // turns that only made tool calls have none. Empty when nothing has been said.
 func (r *repl) lastAssistantText() string {
@@ -467,6 +475,7 @@ func (r *repl) helpCmd() {
   /compact               summarize history in place (lossier than /handoff)
   /settings              session settings picker (show thinking)
   /copy                  copy the last response to the clipboard (clean source)
+  /stop                  abort the running turn (same as esc); nothing sent next
   /help                  this help
   exit, /exit            quit (ctrl-d works too); prints how to resume
 keys: while a turn runs, type to queue a steer (sent at the next step) or esc
@@ -512,7 +521,7 @@ func (r *repl) banner(cwd string, ask bool, resumed int, buildErr error) {
 			emit("%sno active provider (%v). run /provider add, or /provider <name>.%s\n", yellow, buildErr, reset)
 		}
 	}
-	emit("%scommands: /provider · /model · /compact · /settings · /help · exit — ctrl-c cancels a turn%s\n\n", dim, reset)
+	emit("%scommands: /provider · /model · /compact · /settings · /help · exit · esc or /stop cancels a turn, ctrl-c quits%s\n\n", dim, reset)
 }
 
 // applyProvider rebuilds the live provider from a profile, re-discovers
