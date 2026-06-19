@@ -409,6 +409,32 @@ func (m *procManager) reapAll() {
 	os.RemoveAll(runDir(m.sessionID))
 }
 
+// killAllNow is the force-quit reaper: SIGTERM then SIGKILL every owned group
+// back to back, with no grace window, so a second Ctrl-C exits at once instead
+// of blocking on a stubborn process. The signals are sent in the same loop so
+// the kernel queues SIGKILL right behind SIGTERM; the caller exits immediately
+// after and the OS reaps any group that has not died yet. Returns the number of
+// groups it signalled, so a test can prove it acted without sleeping.
+func (m *procManager) killAllNow() int {
+	m.mu.Lock()
+	procs := append([]*Proc(nil), m.procs...)
+	m.mu.Unlock()
+	signalled := 0
+	for _, p := range procs {
+		p.mu.Lock()
+		pgid := p.pgid
+		dead := p.ended || pgid <= 0
+		p.mu.Unlock()
+		if dead {
+			continue
+		}
+		syscall.Kill(-pgid, syscall.SIGTERM)
+		syscall.Kill(-pgid, syscall.SIGKILL)
+		signalled++
+	}
+	return signalled
+}
+
 func (m *procManager) byID(id string) *Proc {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -531,7 +557,12 @@ type procArgs struct {
 	Filter  string `json:"filter"`
 }
 
-func (m *procManager) runTool(raw json.RawMessage) (string, bool) {
+// runTool dispatches the proc tool. ctx carries the turn's cancellation; every
+// action here is a fast bookkeeping call (start spawns and returns, the rest
+// only read or signal), so none blocks on it. The parameter keeps the proc
+// tool's Run on the same cancellable contract as bash, so a future blocking
+// action inherits cancellation instead of having to retrofit the signature.
+func (m *procManager) runTool(ctx context.Context, raw json.RawMessage) (string, bool) {
 	var a procArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "invalid proc input: " + err.Error(), true

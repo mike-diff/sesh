@@ -179,6 +179,7 @@ type tuiConsole struct {
 	col        int    // logical column at the content tail (0 = fresh line)
 	pad        bool   // footer was drawn after a partial line, behind a pushed \n
 	atExit     func() // run on signal-driven exit (reap owned processes)
+	onCtrlC    func() // a Ctrl-C keystroke (extended-keys CSI-u, or raw 0x03) reaches quit through this; nil disables
 
 	// the input editor's state
 	prompt string
@@ -790,15 +791,16 @@ func (t *tuiConsole) endInput(echo string) {
 	t.drawFooterLocked()
 }
 
-// noteQueuedLocked drops a dim transcript line confirming a typed message was
+// noteQueuedLocked drops a transcript line confirming a typed message was
 // queued to steer the running turn, so the user sees it was captured rather than
-// dropped. Caller holds the mutex.
+// dropped. Cyan, not dim, because a steer interrupts the turn now and that is
+// worth more than a muted aside. Caller holds the mutex.
 func (t *tuiConsole) noteQueuedLocked(msg string) {
 	if r := []rune(msg); len(r) > 60 {
 		msg = string(r[:60]) + "..."
 	}
 	t.removeFooterLocked()
-	t.writeLocked(fmt.Sprintf("%s  queued, will steer at the next step: %s%s\n", dim, msg, reset))
+	t.writeLocked(fmt.Sprintf("%s  queued, steering now: %s%s\n", cyan, msg, reset))
 	t.drawFooterLocked()
 }
 
@@ -914,13 +916,29 @@ func (t *tuiConsole) readLineMode(prompt string, mask bool, turn *turnAttend) (s
 			t.endInput("")
 			t.mu.Unlock()
 			return "", io.EOF
-		case r == '\r' && turn != nil: // Enter while working: queue the message, keep editing
+		case r == '\r' && turn != nil: // Enter while working: queue the steer and cancel now
 			// A queued steer carries text only: images pasted into it are not sent
 			// (per the feature's non-goal), but their labels still render so no raw
 			// token rune leaks into the steer text.
 			text, imgs := t.composeMessage()
-			if line := strings.TrimSpace(text); line != "" {
+			if line := strings.TrimSpace(text); strings.EqualFold(line, "/stop") {
+				// /stop is the typed twin of Escape: abort the in-flight turn and
+				// return to the prompt, but do NOT queue anything, so the model gets
+				// no next turn. It is intercepted here because a line typed during a
+				// turn never reaches the between-turns command dispatch.
+				turn.cancel()
+				t.removeFooterLocked()
+				t.writeLocked(fmt.Sprintf("%s  stopping the current turn%s\n", cyan, reset))
+				t.drawFooterLocked()
+				t.buf, t.pos, t.snippets, t.images = nil, 0, nil, nil
+			} else if line != "" {
 				turn.queue(line)
+				// Cancel the in-flight turn so the steer is acted on now, not at the
+				// next natural boundary. The queued text is not lost: the worker's
+				// runTurn returns a cancel error, the live loop drains the queue into
+				// the next turn's input, and the cancel takes a different lock than
+				// this one so holding the editor mutex here is safe.
+				turn.cancel()
 				t.noteQueuedLocked(line)
 				if len(imgs) > 0 {
 					t.removeFooterLocked()
@@ -954,6 +972,16 @@ func (t *tuiConsole) readLineMode(prompt string, mask bool, turn *turnAttend) (s
 			return line, nil
 		case r == '\n': // Ctrl-J: newline everywhere, no protocol needed
 			t.insertLocked('\n')
+		case r == 0x03: // Ctrl-C: a raw 0x03 byte (terminals that do not send a signal)
+			// Route to the same quit path as the signal and the CSI-u form. onCtrlC
+			// must run without t.mu: its force-quit closes the console and the warning
+			// Prints, both taking the console mutex, which would deadlock under t.mu.
+			// Mirror the Ctrl+V / Escape branches that already drop the lock.
+			t.mu.Unlock()
+			if t.onCtrlC != nil {
+				t.onCtrlC()
+			}
+			t.mu.Lock()
 		case r == 0x04: // Ctrl-D on an empty line ends the session (not mid-turn)
 			if turn == nil && len(t.buf) == 0 {
 				t.endInput("")
@@ -991,7 +1019,14 @@ func (t *tuiConsole) readLineMode(prompt string, mask bool, turn *turnAttend) (s
 			if turn != nil && t.escIsBare() { // bare Escape cancels the running turn
 				turn.cancel()
 			} else {
-				t.handleEscape()
+				// onEscape fires only if the sequence decodes to the Escape KEY
+				// itself (CSI-u mode delivers it as a sequence, not a bare 0x1b);
+				// it cancels a live turn and is a no-op between turns.
+				t.handleEscape(func() {
+					if turn != nil {
+						turn.cancel()
+					}
+				})
 			}
 			t.mu.Lock()
 		case r >= 0x20: // printable, unicode included via ReadRune
@@ -1129,10 +1164,20 @@ func (t *tuiConsole) takeImages() []agent.Image {
 // arrows move the cursor or walk history, home/end/delete edit, Shift+Enter
 // inserts a newline (CSI 13;2u from the Kitty disambiguation flag, or CSI
 // 27;2;13~ from terminals/tmux in extended-keys mode), and a bracketed-paste
-// begin marker pulls the whole paste into the buffer. Alt+V (ESC then a plain
-// v) is the Ctrl+V fallback for terminals like Windows Terminal that swallow
-// Ctrl+V for their own paste; it runs the same image-capture pipeline.
-func (t *tuiConsole) handleEscape() {
+// begin marker pulls the whole paste into the buffer. Under extended-keys mode
+// plain Enter also arrives here as a CSI-u sequence (codepoint 13 or kitty
+// functional 57414): an unmodified one is normalized back to a plain Return and
+// ungot so readLineMode's single submit/steer path handles it, while a modified
+// one inserts a newline. Alt+V (ESC then a plain v) is the Ctrl+V fallback for
+// terminals like Windows Terminal that swallow Ctrl+V for their own paste; it
+// runs the same image-capture pipeline.
+//
+// onEscape, when set, is invoked instead of any editing action if the sequence
+// decodes to the Escape KEY itself: under extended-keys (CSI-u) mode the
+// Escape key arrives as a sequence (CSI 27 u), not a bare 0x1b, so the bare
+// path in readLineMode never sees it. Routing it here keeps a single consumer
+// of the sequence bytes (no double-read) while still reaching cancel.
+func (t *tuiConsole) handleEscape(onEscape func()) {
 	// Peek the byte after ESC: a plain v is Alt+V, not a CSI/SS3 introducer, so
 	// route it to the capture pipeline before the sequence decoder. The capture
 	// writes to the transcript (Print relocks), so it must run unlocked, exactly
@@ -1162,11 +1207,47 @@ func (t *tuiConsole) handleEscape() {
 		t.mu.Unlock()
 		return
 	}
+	if isCSIUEscape(params, final) {
+		// The Escape KEY under extended-keys mode. It must reach cancel exactly
+		// like a bare 0x1b; with no live turn it is a harmless no-op (the bytes
+		// are already consumed, so nothing strays into the buffer).
+		if onEscape != nil {
+			onEscape()
+		}
+		return
+	}
+	if isCSIUCtrlC(params, final) {
+		// Ctrl-C under extended-keys mode arrives here as a keystroke, never as an
+		// OS signal, so it must reach the same quit path the signal handler uses.
+		// onCtrlC is called WITHOUT t.mu held (this branch runs before the lock
+		// below): its force-quit closes the console and the first-press warning
+		// Prints, both of which take the console mutex and would deadlock under t.mu.
+		if t.onCtrlC != nil {
+			t.onCtrlC()
+		}
+		return
+	}
+	if enter, mod := isCSIUEnter(params, final); enter {
+		// Under extended-keys / kitty mode the Enter key is reported as a CSI-u
+		// sequence (codepoint 13 or functional 57414), never a bare \r, so the
+		// bare submit/steer path in readLineMode never sees it. Normalize an
+		// unmodified Enter back to a plain \r and unget it: readLineMode's next
+		// loop iteration reads it from t.ungot and runs the single submit/steer
+		// path unchanged. A modified Enter (Shift/Alt) inserts a newline instead,
+		// matching Ctrl-J and the kitty 13;2 / 13;3 forms below.
+		if mod {
+			t.mu.Lock()
+			t.insertLocked('\n')
+			t.mu.Unlock()
+		} else {
+			t.unget('\r')
+		}
+		return
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	switch {
-	case (final == 'u' && (params == "13;2" || params == "13;3")) || // kitty: shift/alt+enter
-		(final == '~' && (params == "27;2;13" || params == "27;3;13")): // extended keys: tmux/xterm
+	case final == '~' && (params == "27;2;13" || params == "27;3;13"): // shift/alt+enter, the legacy '~' form (the kitty 'u' form is decoded above)
 		t.insertLocked('\n')
 	case final == 'A': // up: move a visual row, else walk history at the top
 		if !t.cursorUpLocked() {
@@ -1193,6 +1274,54 @@ func (t *tuiConsole) handleEscape() {
 			t.buf = append(t.buf[:t.pos], t.buf[t.pos+1:]...)
 		}
 	}
+}
+
+// isCSIUEscape reports whether a decoded sequence (params, final) is the Escape
+// KEY under extended-keys / CSI-u mode. There the key is reported by its Unicode
+// codepoint in the first parameter field, and Escape is codepoint 27: bare as
+// CSI 27 u, or with a modifier as CSI 27;<mods> u. Keying on the codepoint, not
+// just the final 'u', is load-bearing: extended Enter is also final 'u' but
+// codepoint 13 (CSI 13;2u), and must keep inserting a newline rather than cancel.
+func isCSIUEscape(params string, final rune) bool {
+	return final == 'u' && (params == "27" || strings.HasPrefix(params, "27;"))
+}
+
+// isCSIUCtrlC reports whether a decoded sequence is the Ctrl-C key under
+// extended-keys / CSI-u mode. The key is codepoint 99 ('c') with a Ctrl
+// modifier, reported as CSI 99;5 u (modifier 5 == Ctrl). Both the codepoint and
+// the modifier are load-bearing: unmodified 'c' is CSI 99 u or CSI 99;1 u and
+// must keep typing the letter, not quit, so a bare or modifier-1 form is excluded.
+func isCSIUCtrlC(params string, final rune) bool {
+	if final != 'u' {
+		return false
+	}
+	cp, mods, hasMods := strings.Cut(params, ";")
+	if cp != "99" || !hasMods {
+		return false
+	}
+	// The modifier field is the bitmask + 1; Ctrl is bit 4, so any reported value
+	// with that bit set (e.g. 5 = Ctrl, 7 = Ctrl+Alt) counts. Modifier 1 is "none".
+	m, err := strconv.Atoi(mods)
+	return err == nil && (m-1)&4 != 0
+}
+
+// isCSIUEnter reports whether a decoded sequence is the Enter key under
+// extended-keys / CSI-u mode, and whether a modifier is held. Enter is reported
+// by codepoint in the first field: standard codepoint 13, or kitty's functional
+// code 57414 (0xE006). modified is true when a modifier field is present and is
+// not "1" ("none"): Shift+Enter and Alt+Enter (e.g. 13;2, 57414;3) are modified
+// and must insert a newline, while bare 13/57414 or explicit 13;1/57414;1 are
+// unmodified and must submit. The codepoint check excludes Escape (27) and
+// Ctrl-C (99), which also end in 'u'.
+func isCSIUEnter(params string, final rune) (enter, modified bool) {
+	if final != 'u' {
+		return false, false
+	}
+	cp, mods, hasMods := strings.Cut(params, ";")
+	if cp != "13" && cp != "57414" {
+		return false, false
+	}
+	return true, hasMods && mods != "1"
 }
 
 // snippet thresholds: pastes beyond either collapse to an atomic token so the
@@ -1491,20 +1620,34 @@ func (t *tuiConsole) Select(title string, items []string, current int) (int, err
 	}
 }
 
-// escIsBare reports whether an Esc keypress arrived alone: escape sequences
-// land as a burst, so if no rune follows within a short window it was the bare
-// key. A peeked rune is put back for the real decoder.
+// escIsBare reports whether an Esc keypress arrived alone (the user pressing the
+// key to cancel) rather than as the lead byte of an escape sequence. It decides
+// by the byte that FOLLOWS Esc, not by timing: a CSI or SS3 sequence's introducer
+// ([ or O) arrives contiguously behind Esc, while a bare Escape is followed by
+// nothing or by an unrelated keystroke. Keying off the introducer is what makes
+// this robust under tmux/SSH, where tmux's escape-time can delay a lone Esc past
+// any tight timer and a presence-based test would misread it as a sequence. A
+// peeked introducer is put back for handleEscape; a peeked non-introducer is put
+// back so it is processed as the user's next keystroke.
 func (t *tuiConsole) escIsBare() bool {
 	if len(t.ungot) > 0 {
-		return false
+		// A pushed-back rune only exists because a prior peek read it; treat its
+		// value the same as a freshly peeked byte so a non-introducer still reads
+		// as bare.
+		r := t.ungot[len(t.ungot)-1]
+		return r != '[' && r != 'O'
 	}
 	select {
 	case r, ok := <-t.runes:
 		if ok {
 			t.unget(r)
+			return r != '[' && r != 'O' // only [ (CSI) and O (SS3) introduce a sequence
 		}
-		return !ok // a closed stream after Esc counts as bare
+		return true // a closed stream after Esc counts as bare
 	case <-time.After(25 * time.Millisecond):
+		// No byte arrived contiguously: a real sequence's introducer would already
+		// be here, so this was the bare key. The window only needs to cover the
+		// contiguous burst, not tmux's delay before the lone Esc reaches us.
 		return true
 	}
 }

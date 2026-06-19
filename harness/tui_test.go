@@ -191,10 +191,11 @@ func TestCursorVerticalNav(t *testing.T) {
 // breaks on its own one-line change (drop the \+Enter branch; drop a CSI match).
 func TestEditorNewlineKeys(t *testing.T) {
 	for _, c := range []struct{ name, keys string }{
-		{"ctrl-j", "ab\ncd\r"},                          // \n: any terminal
-		{"backslash-enter", "ab\\\rcd\r"},               // \ + Enter: universal fallback
-		{"kitty shift+enter", "ab\033[13;2ucd\r"},       // CSI 13;2u
-		{"extended shift+enter", "ab\033[27;2;13~cd\r"}, // CSI 27;2;13~ (tmux/xterm)
+		{"ctrl-j", "ab\ncd\r"},                                  // \n: any terminal
+		{"backslash-enter", "ab\\\rcd\r"},                       // \ + Enter: universal fallback
+		{"kitty shift+enter", "ab\033[13;2ucd\r"},               // CSI 13;2u
+		{"extended shift+enter", "ab\033[27;2;13~cd\r"},         // CSI 27;2;13~ (tmux/xterm)
+		{"kitty functional shift+enter", "ab\033[57414;3ucd\r"}, // CSI 57414;3u (alt+enter, functional codepoint)
 	} {
 		if line, _ := driveKeys(t, nil, c.keys); line != "ab\ncd" {
 			t.Fatalf("%s: line = %q, want %q", c.name, line, "ab\ncd")
@@ -217,17 +218,42 @@ func TestEditorSecretSubmitsOnBackslashEnter(t *testing.T) {
 	}
 }
 
-// TestAttendTurnQueuesAndCancels: while a turn runs, the live editor queues a
-// typed message on Enter (instead of submitting) and cancels the turn on a bare
-// Escape. Breaker: drop the turn-mode Enter branch and "fix it" is never queued;
-// drop the bare-Escape branch and cancel is never called.
+// TestAttendTurnQueuesAndCancels: while a turn runs, the live editor cancels the
+// turn on a bare Escape. Breaker: drop the bare-Escape branch and cancel is never
+// called.
 func TestAttendTurnQueuesAndCancels(t *testing.T) {
 	f, err := os.CreateTemp(t.TempDir(), "tui-out")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	tc := &tuiConsole{out: f, in: bufio.NewReader(strings.NewReader("fix it\r\x1b")), cols: 80}
+	tc := &tuiConsole{out: f, in: bufio.NewReader(strings.NewReader("\x1b")), cols: 80}
+	canceled := false
+	if err := tc.attendTurn(turnAttend{
+		done:   make(chan struct{}), // never closes; the script's EOF ends attend
+		cancel: func() { canceled = true },
+		queue:  func(string) {},
+	}); err != errTurnOver {
+		t.Fatalf("attendTurn err = %v, want errTurnOver", err)
+	}
+	if !canceled {
+		t.Fatal("bare Escape must cancel the turn")
+	}
+}
+
+// TestAttendTurnSteerCancelsImmediately: a message typed and submitted with Enter
+// while a turn runs both queues the steer AND cancels the in-flight turn, so the
+// steer is acted on now instead of waiting for the next iteration boundary. The
+// script has no Escape: the cancel must come from the steer itself. Breaker:
+// remove the turn.cancel() call in the turn-mode Enter branch and canceled stays
+// false while the message is still queued.
+func TestAttendTurnSteerCancelsImmediately(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "tui-out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tc := &tuiConsole{out: f, in: bufio.NewReader(strings.NewReader("fix it\r")), cols: 80}
 	var queued []string
 	canceled := false
 	if err := tc.attendTurn(turnAttend{
@@ -241,7 +267,274 @@ func TestAttendTurnQueuesAndCancels(t *testing.T) {
 		t.Fatalf("Enter must queue the message, got %v", queued)
 	}
 	if !canceled {
-		t.Fatal("bare Escape must cancel the turn")
+		t.Fatal("queuing a steer must also cancel the in-flight turn")
+	}
+}
+
+// TestAttendTurnStopCommandCancelsWithoutQueuing: typing "/stop" and Enter while
+// a turn runs aborts it like Escape and sends nothing to the model. Unlike an
+// ordinary steer it must cancel WITHOUT queuing, so the next turn gets no input.
+// The match is case-insensitive and exact. Breaker: route /stop through the steer
+// path and it queues "/stop" (queued non-empty), or drop the cancel and canceled
+// stays false.
+func TestAttendTurnStopCommandCancelsWithoutQueuing(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "tui-out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tc := &tuiConsole{out: f, in: bufio.NewReader(strings.NewReader("/STOP\r")), cols: 80}
+	var queued []string
+	canceled := false
+	if err := tc.attendTurn(turnAttend{
+		done:   make(chan struct{}), // never closes; the script's EOF ends attend
+		cancel: func() { canceled = true },
+		queue:  func(s string) { queued = append(queued, s) },
+	}); err != errTurnOver {
+		t.Fatalf("attendTurn err = %v, want errTurnOver", err)
+	}
+	if !canceled {
+		t.Fatal("/stop must cancel the in-flight turn")
+	}
+	if len(queued) != 0 {
+		t.Fatalf("/stop must not queue anything, got %v", queued)
+	}
+}
+
+// TestEscIsBareKeysOffIntroducer: bare-Escape detection decides by the byte
+// following Esc, not by timing, so it holds up under tmux/SSH latency. A lone
+// Esc with the stream then closed is bare; an Esc followed by a CSI introducer
+// ([) is a sequence (not bare); an Esc followed by a printable like 'x' is bare,
+// because only [ and O introduce a sequence. The channel is pre-seeded so the
+// result never depends on the wall clock. Breaker: revert escIsBare to treating
+// any present byte as non-bare and the 'x' case flips to false.
+func TestEscIsBareKeysOffIntroducer(t *testing.T) {
+	cases := []struct {
+		name string
+		next rune // the byte queued after Esc; 0 means "queue nothing, close"
+		want bool
+	}{
+		{"lone esc then closed", 0, true},
+		{"esc then CSI introducer", '[', false},
+		{"esc then SS3 introducer", 'O', false},
+		{"esc then printable", 'x', true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tc := &tuiConsole{runes: make(chan rune, 1)}
+			if c.next != 0 {
+				tc.runes <- c.next
+			}
+			close(tc.runes) // the closed-stream branch must not misread a queued byte
+			if got := tc.escIsBare(); got != c.want {
+				t.Fatalf("escIsBare after Esc+%q = %v, want %v", c.next, got, c.want)
+			}
+		})
+	}
+}
+
+// attendKeys drives attendTurn headless over a scripted keystroke stream and
+// reports whether the turn was canceled and what (if anything) was queued. The
+// done channel never closes, so the script's trailing EOF is what ends attend:
+// this lets a test feed a sequence and then observe state without racing a
+// real turn boundary.
+func attendKeys(t *testing.T, keys string) (canceled bool, queued []string) {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "tui-out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tc := &tuiConsole{out: f, in: bufio.NewReader(strings.NewReader(keys)), cols: 80}
+	if err := tc.attendTurn(turnAttend{
+		done:   make(chan struct{}), // never closes; the script's EOF ends attend
+		cancel: func() { canceled = true },
+		queue:  func(s string) { queued = append(queued, s) },
+	}); err != errTurnOver {
+		t.Fatalf("attendTurn err = %v, want errTurnOver", err)
+	}
+	return canceled, queued
+}
+
+// TestAttendTurnCSIUEscapeCancels: under extended-keys (CSI-u) mode the Escape
+// KEY arrives as a sequence, not a bare 0x1b, so the bare path never sees it.
+// The bare form CSI 27 u and the modified form CSI 27;2 u must both cancel the
+// turn exactly like a bare Escape, and neither queues nor inserts anything.
+// Breaker: remove the isCSIUEscape case in handleEscape and canceled stays false.
+func TestAttendTurnCSIUEscapeCancels(t *testing.T) {
+	for _, c := range []struct{ name, keys string }{
+		{"bare csi-u escape", "\033[27u"},       // CSI 27 u
+		{"modified csi-u escape", "\033[27;2u"}, // CSI 27;2 u (a modifier held)
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			canceled, queued := attendKeys(t, c.keys)
+			if !canceled {
+				t.Fatal("CSI-u Escape must cancel the in-flight turn")
+			}
+			if len(queued) != 0 {
+				t.Fatalf("CSI-u Escape must not queue anything, got %v", queued)
+			}
+		})
+	}
+}
+
+// TestAttendTurnShiftEnterDoesNotCancel: extended Enter (CSI 13;2u) shares the
+// final 'u' with the CSI-u Escape but carries codepoint 13, not 27, so it must
+// insert a newline and leave the turn running. Feeding only the sequence (no
+// submitting Enter) isolates it from the steer-cancel that a real Enter would
+// trigger. Breaker: match the cancel on final=='u' alone and this wrongly cancels.
+func TestAttendTurnShiftEnterDoesNotCancel(t *testing.T) {
+	canceled, queued := attendKeys(t, "ab\033[13;2ucd")
+	if canceled {
+		t.Fatal("Shift+Enter (codepoint 13) must not be treated as Escape")
+	}
+	if len(queued) != 0 {
+		t.Fatalf("Shift+Enter must not queue anything on its own, got %v", queued)
+	}
+}
+
+// TestAttendTurnEditingKeysDoNotCancel: ordinary CSI editing sequences during a
+// turn (up-arrow CSI A, delete CSI 3~) edit the buffer and never cancel, so the
+// CSI-u Escape routing did not swallow the rest of the editing keys. Breaker:
+// route every decoded sequence to cancel and these flip canceled to true.
+func TestAttendTurnEditingKeysDoNotCancel(t *testing.T) {
+	for _, c := range []struct{ name, keys string }{
+		{"up arrow", "\033[A"}, // CSI A: history / cursor up
+		{"delete", "x\033[3~"}, // CSI 3~: delete at cursor
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if canceled, _ := attendKeys(t, c.keys); canceled {
+				t.Fatalf("%s must not cancel the turn", c.name)
+			}
+		})
+	}
+}
+
+// TestIsCSIUCtrlC: only Ctrl-modified codepoint 99 ('c') under final 'u' is
+// Ctrl-C. Plain 'c' (99 or 99;1), the Escape key (27), and extended Enter
+// (13;2) must all be excluded so they keep their own meaning. Breaker: match on
+// final=='u' alone and the escape/enter cases flip to true.
+func TestIsCSIUCtrlC(t *testing.T) {
+	cases := []struct {
+		params string
+		final  rune
+		want   bool
+	}{
+		{"99;5", 'u', true},  // Ctrl+c: codepoint 99, modifier 5 (Ctrl)
+		{"99;7", 'u', true},  // Ctrl+Alt+c: the Ctrl bit is still set
+		{"99", 'u', false},   // plain 'c', no modifier
+		{"99;1", 'u', false}, // explicit "no modifier"
+		{"27", 'u', false},   // the Escape key
+		{"13;2", 'u', false}, // Shift+Enter
+		{"99;5", '~', false}, // right codepoint+mod but not a CSI-u final
+	}
+	for _, c := range cases {
+		if got := isCSIUCtrlC(c.params, c.final); got != c.want {
+			t.Errorf("isCSIUCtrlC(%q, %q) = %v, want %v", c.params, c.final, got, c.want)
+		}
+	}
+}
+
+// TestIsCSIUEnter: under final 'u', codepoint 13 (standard) and 57414 (kitty's
+// functional Enter, 0xE006) are both Enter; a present modifier other than "1"
+// marks it modified (Shift/Alt -> newline) while bare or "1" is unmodified
+// (submit). Escape (27) and Ctrl-C (99) must be excluded. Breaker: drop the
+// 57414 codepoint and the functional case flips to enter=false.
+func TestIsCSIUEnter(t *testing.T) {
+	cases := []struct {
+		params        string
+		final         rune
+		enter, modded bool
+	}{
+		{"13", 'u', true, false},     // standard Enter, unmodified
+		{"57414", 'u', true, false},  // kitty functional Enter, unmodified
+		{"13;2", 'u', true, true},    // Shift+Enter
+		{"57414;3", 'u', true, true}, // Alt+Enter (functional codepoint)
+		{"13;1", 'u', true, false},   // explicit "no modifier"
+		{"27", 'u', false, false},    // the Escape key
+		{"99;5", 'u', false, false},  // Ctrl-C
+		{"13", '~', false, false},    // right codepoint but not a CSI-u final
+	}
+	for _, c := range cases {
+		enter, modded := isCSIUEnter(c.params, c.final)
+		if enter != c.enter || modded != c.modded {
+			t.Errorf("isCSIUEnter(%q, %q) = (%v, %v), want (%v, %v)",
+				c.params, c.final, enter, modded, c.enter, c.modded)
+		}
+	}
+}
+
+// TestReadLineCSIUEnterSubmits: under extended-keys mode an unmodified Enter
+// arrives as a CSI-u sequence (kitty functional 57414), never a bare \r, so the
+// editor must normalize it back to a Return and submit the typed line through
+// the single submit path. Breaker: remove the unget('\r') for an unmodified
+// CSI-u Enter and ReadLine never returns the line.
+func TestReadLineCSIUEnterSubmits(t *testing.T) {
+	if line, _ := driveKeys(t, nil, "hi\033[57414u"); line != "hi" {
+		t.Fatalf("CSI-u Enter must submit: line = %q, want %q", line, "hi")
+	}
+}
+
+// TestAttendTurnCSIUEnterSteers: during a turn an unmodified CSI-u Enter must
+// take the same steer path a bare \r would (queue the text and cancel the
+// in-flight turn), not insert a newline. Breaker: route an unmodified CSI-u
+// Enter to the newline case and nothing is queued.
+func TestAttendTurnCSIUEnterSteers(t *testing.T) {
+	canceled, queued := attendKeys(t, "fix it\033[57414u")
+	if len(queued) != 1 || queued[0] != "fix it" {
+		t.Fatalf("CSI-u Enter mid-turn must queue the steer, got %v", queued)
+	}
+	if !canceled {
+		t.Fatal("queuing a steer via CSI-u Enter must cancel the in-flight turn")
+	}
+}
+
+// ctrlCKeys drives readLineMode headless over a scripted keystroke stream with a
+// spy onCtrlC installed, reporting whether the hook fired and what the editor
+// returned. The stream's trailing EOF ends the idle read (turn == nil), so the
+// test can feed a Ctrl-C form and observe the hook without racing a real turn.
+func ctrlCKeys(t *testing.T, keys string) (fired bool, line string) {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "tui-out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tc := &tuiConsole{
+		out:     f,
+		in:      bufio.NewReader(strings.NewReader(keys)),
+		cols:    80,
+		onCtrlC: func() { fired = true },
+	}
+	line, _ = tc.readLineMode("-> ", false, nil)
+	return fired, line
+}
+
+// TestHandleEscapeCSIUCtrlCInvokesHook: under extended-keys mode Ctrl-C arrives
+// as CSI 99;5 u (never an OS signal), so the editor must route it to onCtrlC and
+// not type a 'c' or run any editing action. Breaker: drop the isCSIUCtrlC branch
+// in handleEscape and the hook never fires.
+func TestHandleEscapeCSIUCtrlCInvokesHook(t *testing.T) {
+	fired, line := ctrlCKeys(t, "\033[99;5u")
+	if !fired {
+		t.Fatal("CSI-u Ctrl-C must invoke onCtrlC")
+	}
+	if line != "" {
+		t.Fatalf("CSI-u Ctrl-C must not edit the buffer, got %q", line)
+	}
+}
+
+// TestReadLineRawCtrlCInvokesHook: a raw 0x03 byte (terminals that send no
+// signal) also routes to onCtrlC, without holding the editor mutex so the
+// force-quit and warning Prints cannot deadlock. Breaker: drop the 0x03 case in
+// readLineMode and the hook never fires.
+func TestReadLineRawCtrlCInvokesHook(t *testing.T) {
+	fired, line := ctrlCKeys(t, "\x03")
+	if !fired {
+		t.Fatal("raw 0x03 must invoke onCtrlC")
+	}
+	if line != "" {
+		t.Fatalf("raw 0x03 must not produce input, got %q", line)
 	}
 }
 

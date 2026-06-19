@@ -61,6 +61,34 @@ func TestProcStopKillsGroup(t *testing.T) {
 	}
 }
 
+// TestKillAllNowReturnsPromptly: the force-quit reaper signals every owned group
+// and returns without the killGrace sleep, so a second Ctrl-C exits at once even
+// with a stubborn process running. Breaker: put a time.Sleep(killGrace) back on
+// this path and the elapsed time exceeds the grace window.
+func TestKillAllNowReturnsPromptly(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newProcManager("scale-force")
+	// A process that ignores SIGTERM and keeps running, so only SIGKILL ends it:
+	// the helper must not wait for it to die before returning.
+	p, _, err := m.start("trap '' TERM; sleep 30", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(2*time.Second, func() bool { return p.pgid > 0 }) {
+		t.Fatal("process group never came up")
+	}
+	start := time.Now()
+	n := m.killAllNow()
+	elapsed := time.Since(start)
+	if n != 1 {
+		t.Fatalf("must signal the one owned group, got %d", n)
+	}
+	if elapsed >= killGrace {
+		t.Fatalf("force reaper blocked for %v; it must not sleep killGrace (%v)", elapsed, killGrace)
+	}
+	m.reapAll() // clean up the run dir and make sure nothing leaks past the test
+}
+
 // TestAutoPromote: a command that outlives the promote window becomes a tracked
 // background process (handle returned, kept in the registry); a quick command
 // returns synchronously and leaves nothing behind. Breaker: revert doBash to
@@ -311,24 +339,25 @@ func TestForegroundNoTrailingNewline(t *testing.T) {
 func TestProcToolDispatch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	m := newProcManager("scale-tool")
-	out, isErr := m.runTool([]byte(`{"action":"start","command":"echo hello; sleep 30","name":"svc"}`))
+	ctx := context.Background()
+	out, isErr := m.runTool(ctx, []byte(`{"action":"start","command":"echo hello; sleep 30","name":"svc"}`))
 	if isErr || !strings.Contains(out, "started proc-1") {
 		t.Fatalf("start: %q err=%v", out, isErr)
 	}
-	if out, _ := m.runTool([]byte(`{"action":"list"}`)); !strings.Contains(out, "proc-1") || !strings.Contains(out, "svc") {
+	if out, _ := m.runTool(ctx, []byte(`{"action":"list"}`)); !strings.Contains(out, "proc-1") || !strings.Contains(out, "svc") {
 		t.Fatalf("list must show the process: %q", out)
 	}
 	waitFor(2*time.Second, func() bool {
-		o, _ := m.runTool([]byte(`{"action":"logs","id":"proc-1"}`))
+		o, _ := m.runTool(ctx, []byte(`{"action":"logs","id":"proc-1"}`))
 		return strings.Contains(o, "hello")
 	})
-	if out, _ := m.runTool([]byte(`{"action":"logs","id":"proc-1"}`)); strings.Contains(out, "hello") {
+	if out, _ := m.runTool(ctx, []byte(`{"action":"logs","id":"proc-1"}`)); strings.Contains(out, "hello") {
 		t.Fatalf("a second logs read must not repeat consumed output: %q", out)
 	}
-	if out, isErr := m.runTool([]byte(`{"action":"stop","id":"proc-1"}`)); isErr || !strings.Contains(out, "stopped proc-1") {
+	if out, isErr := m.runTool(ctx, []byte(`{"action":"stop","id":"proc-1"}`)); isErr || !strings.Contains(out, "stopped proc-1") {
 		t.Fatalf("stop: %q err=%v", out, isErr)
 	}
-	if out, _ := m.runTool([]byte(`{"action":"bogus"}`)); !strings.Contains(out, "unknown proc action") {
+	if out, _ := m.runTool(ctx, []byte(`{"action":"bogus"}`)); !strings.Contains(out, "unknown proc action") {
 		t.Fatalf("unknown action must be reported: %q", out)
 	}
 	m.reapAll()
