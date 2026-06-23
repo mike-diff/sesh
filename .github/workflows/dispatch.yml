@@ -1,0 +1,171 @@
+name: dispatch
+
+# Turns an issue labeled `dispatch` into a verified pull request.
+# A headless sesh run owns research, plan, implement, review, validate; the
+# repository's own ci.yml is the independent external check on the resulting PR.
+#
+# See .github/dispatch/README.md for the design and operating model.
+
+on:
+  issues:
+    types: [labeled]
+
+# Two dispatches on the same issue queue (never cancel; work would be lost).
+# Dispatches on different issues run concurrently.
+concurrency:
+  group: dispatch-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    # Gate 1 is implicit: only Write/Triage users can add labels on a public
+    # repo. Gate 2 is the hard sender allow-list below. Gate 3 is the
+    # `dispatch` environment's required reviewer (Settings, Environments).
+    if: |
+      github.event.label.name == 'dispatch' &&
+      github.event.sender.login == 'mike-diff'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    # Gate 3: the job pauses here until you approve. The GLM key lives in this
+    # environment's secrets, so nothing is spent before approval.
+    environment:
+      name: dispatch
+
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.DISPATCH_APP_ID }}
+          private-key: ${{ secrets.DISPATCH_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+      # The default GITHUB_TOKEN cannot trigger downstream workflows, so a PR
+      # opened with it would never run ci.yml. The App token fires CI normally.
+
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Configure Git identity
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          # Commits are authored by the App installation's bot user. GitHub's
+          # noreply email format for bots is "<bot-user-id>+<slug>[bot]@...".
+          slug="${{ steps.app-token.outputs.app-slug }}"
+          bot_id=$(gh api "/users/${slug}[bot]" --jq .id)
+          git config user.name  "${slug}[bot]"
+          git config user.email "${bot_id}+${slug}[bot]@users.noreply.github.com"
+
+      - name: Set up job context
+        id: ctx
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          base="$(git rev-parse --abbrev-ref HEAD)"
+          branch="dispatch/issue-${ISSUE_NUMBER}"
+          git checkout -b "$branch"
+          {
+            printf '# Task\n\n'
+            printf 'Resolve issue #%s: %s\n\n' "$ISSUE_NUMBER" "$ISSUE_TITLE"
+            printf '## Issue body\n\n%s\n' "$ISSUE_BODY"
+          } > TASK.md
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "base=$base"   >> "$GITHUB_OUTPUT"
+
+      - name: Assemble runtime .sesh/ from tracked dispatch assets
+        run: |
+          # The repo keeps .sesh/ fully gitignored (personal mods only), so the
+          # dispatch agent definition lives in tracked .github/dispatch/ and is
+          # assembled into a project .sesh/ here. sesh loads it on startup.
+          mkdir -p .sesh/skills
+          cp .github/dispatch/APPEND_SYSTEM.md .sesh/APPEND_SYSTEM.md
+          cp .github/dispatch/providers.json    .sesh/providers.json
+          cp -R .github/dispatch/skills/.       .sesh/skills/
+          echo "assembled .sesh/:"; find .sesh -type f | sort
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: Install sesh (checksum-verified, via the repo's own installer)
+        run: |
+          sh ./install.sh
+          # install.sh downloads the rolling release, verifies its SHA-256
+          # against the published SHA256SUMS, then runs sesh -install.
+          ~/.local/bin/sesh -version
+
+      - name: Verify config (fail fast on a bad key or endpoint)
+        env:
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+        run: ~/.local/bin/sesh -doctor
+
+      - name: Run dispatch agent
+        id: agent
+        env:
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+        run: |
+          set +e
+          ~/.local/bin/sesh -p "$(cat TASK.md)" \
+            -yes \
+            -provider zai \
+            -model glm-5.2 \
+            -max-iters 40 \
+            -max-tools 200
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Commit, push, open PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ steps.ctx.outputs.branch }}
+          BASE: ${{ steps.ctx.outputs.base }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          AGENT_EXIT: ${{ steps.agent.outputs.exit }}
+        run: |
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "no changes produced by agent"
+          else
+            git add -A
+            git commit -m "dispatch: resolve #${ISSUE_NUMBER}" -q
+          fi
+          git push -u origin "$BRANCH"
+
+          gh pr create \
+            --base "$BASE" \
+            --head "$BRANCH" \
+            --title "$ISSUE_TITLE" \
+            --body "Closes #${ISSUE_NUMBER}.
+
+          Generated by the dispatch workflow (sesh + glm-5.2).
+          Agent exit code: ${AGENT_EXIT} (0 done, 1 error, 3 stuck, 4 iter cap)." \
+            || gh pr edit "$BRANCH" --body "Updated by a dispatch run."
+
+      - name: Remove the dispatch label (re-label to re-run)
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: gh issue edit "$ISSUE_NUMBER" --remove-label dispatch || true
+
+      - name: Report a non-success exit
+        if: steps.agent.outputs.exit != '0' && steps.agent.outputs.exit != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh issue comment "$ISSUE_NUMBER" --body "Dispatch did not finish cleanly (exit ${{ steps.agent.outputs.exit }}). See the [run log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."

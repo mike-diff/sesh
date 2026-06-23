@@ -1,0 +1,12 @@
+{
+  "default": "zai",
+  "providers": {
+    "zai": {
+      "protocol": "openai",
+      "url": "https://api.z.ai/api/coding/paas/v4",
+      "model": "glm-5.2",
+      "context": 200000,
+      "key_env": "ZAI_API_KEY"
+    }
+  }
+}
