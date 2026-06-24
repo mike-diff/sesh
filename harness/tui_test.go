@@ -301,6 +301,67 @@ func TestAttendTurnStopCommandCancelsWithoutQueuing(t *testing.T) {
 	}
 }
 
+// TestBeginInputPreservesDraftAcrossTurnEnd: a draft typed during a turn (but
+// never submitted) must survive the working-to-completed transition and remain
+// in the editor when the next prompt opens, so in-progress text is not lost.
+// attendTurn leaves the typed buffer in place when the turn ends; the next
+// ReadLine re-opens the editor through beginInput, which must carry that buffer
+// forward instead of zeroing it. Breaker: revert beginInput to an unconditional
+// t.buf = nil and the submitted line comes back empty instead of "fix it".
+func TestBeginInputPreservesDraftAcrossTurnEnd(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "tui-out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tc := &tuiConsole{out: f, in: bufio.NewReader(strings.NewReader("fix it")), cols: 80}
+	// Phase 1: the user types a steering draft while a turn runs; the stream's
+	// EOF ends the attend (errTurnOver) the way a turn finishing on its own does.
+	if err := tc.attendTurn(turnAttend{
+		done:   make(chan struct{}), // never closes; EOF ends attend
+		cancel: func() {},
+		queue:  func(string) {},
+	}); err != errTurnOver {
+		t.Fatalf("attendTurn err = %v, want errTurnOver", err)
+	}
+	if got := string(tc.buf); got != "fix it" {
+		t.Fatalf("draft must survive attendTurn: buf = %q, want %q", got, "fix it")
+	}
+	// Phase 2: the next prompt re-opens the editor. EOF closed the pump's
+	// channel, so re-arm a fresh input source the way a live console keeps
+	// reading, then submit with Enter.
+	tc.runes = nil
+	tc.in = bufio.NewReader(strings.NewReader("\r"))
+	line, err := tc.ReadLine("-> ")
+	if err != nil {
+		t.Fatalf("ReadLine: %v", err)
+	}
+	if line != "fix it" {
+		t.Fatalf("draft must carry into the next prompt: line = %q, want %q", line, "fix it")
+	}
+}
+
+// TestBeginInputDropsMaskedDraftForOrdinaryPrompt: a non-empty buffer left from
+// a masked prompt must never carry into an ordinary one, so a secret cannot
+// leak across prompt types. The carry-over branch is gated on !mask, so a
+// non-empty masked buffer is cleared when the next (non-masked) prompt opens.
+// Breaker: drop the !mask guard on the carry-over branch and the secret text
+// survives into the ordinary prompt.
+func TestBeginInputDropsMaskedDraftForOrdinaryPrompt(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "tui-out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	// Seed the exact state a masked prompt leaves mid-edit (non-empty buffer,
+	// masked), then open an ordinary prompt: the secret must not carry.
+	tc := &tuiConsole{out: f, cols: 80, buf: []rune("hush"), pos: 4, mask: true}
+	tc.beginInput("-> ", false)
+	if len(tc.buf) != 0 {
+		t.Fatalf("a masked draft must not carry into an ordinary prompt: buf = %q", string(tc.buf))
+	}
+}
+
 // TestEscIsBareKeysOffIntroducer: bare-Escape detection decides by the byte
 // following Esc, not by timing, so it holds up under tmux/SSH latency. A lone
 // Esc with the stream then closed is bare; an Esc followed by a CSI introducer
