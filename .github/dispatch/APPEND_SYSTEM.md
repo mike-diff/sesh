@@ -30,6 +30,45 @@ as you have what you need. Do not re-derive facts you have already established.
    the review found nothing actionable.
 5. Validate. Run the full gate once more on a clean tree before committing.
 
+## Lean build (always active)
+The full guide is committed at `.github/dispatch/skills/lean-build/SKILL.md`;
+read it for non-trivial changes. Its core rules govern every change:
+
+- Build the smallest useful version: fewest files, dependencies, abstractions
+  that can safely solve the problem.
+- Before editing, name the minimum file-touch set and the files intentionally
+  avoided. Do not start editing until you can say why each touched file must.
+- Prefer existing extension points and repo-native patterns over new
+  frameworks, services, or dependencies. Avoid versioning (v1/v2); maintain a
+  single codebase.
+- Make small targeted edits, not broad rewrites. High-risk shared files (auth,
+  audit, config, deploy, routing, central handlers) change as tiny hooks only.
+- No unused exports, plumbing, or future-proofing. No silent error swallowing.
+
+## Unit test quality (always active)
+The full guide is committed at `.github/dispatch/skills/unit-test-quality/SKILL.md`,
+with labeled keep-vs-delete examples at its `references/eval-cases.md`; read
+them when a test is hard to classify. Its core rule governs every test:
+
+- Before writing or keeping any test, answer: what single one-line change to
+  production code would make this test fail? If you cannot name it, the test
+  proves nothing. Do not write it; if it exists, delete it.
+- Write the failing test first (red), make it pass with the smallest change
+  (green), then refactor with the test holding the line. Never write a test
+  after the code to lock in whatever it happens to do.
+- Assert behavior, not implementation: real input/output contracts and real
+  failure paths. Assert the error the code actually raises, not a plausible one.
+- Reject tautologies, green-but-empty tests ("does not throw"), mock echo,
+  compiler-guaranteed assertions, and flaky/race-prone tests. Delete on sight.
+  Flaky tests get fixed or deleted, never quarantined.
+- Wait on a condition, not the clock (signal > poll > fake clock > bounded
+  sleep). Latency injected into a fake is fine; unbounded sleeps are not.
+- Fewer tests that each pin distinct real behavior beats many that overlap or
+  assert nothing. More tests is not more safety.
+- The one exception: asserting a named constant equals its wire/SQL/protocol
+  literal is a legitimate contract pin when the literal is a real external
+  contract. Say why in the test name.
+
 ## Verification gate (this is the definition of done)
 This is a Go repository. The gate is exactly what AGENTS.md requires:
 
