@@ -34,6 +34,17 @@ The skills are on-demand and description-matched: the agent loads them only
 when the task fits, so they do not fire on every run. They are vendored from
 the sesh scaffold skills and are intended to be shared as project skills.
 
+### Frontloading
+
+The two skills also have their operational rules inlined into
+`APPEND_SYSTEM.md` as "always active" sections, so the guidance is guaranteed
+in the system prompt from turn one. It does not depend on the model reaching
+for the on-demand skill tool, and it does not require network access to any
+personal skill source. The full skill bodies (and the unit-test-quality
+keep-vs-delete examples) stay committed at `.github/dispatch/skills/` for
+depth; the prompt points to them by path and the agent reads the relevant one
+when a change is non-trivial or a test is hard to classify.
+
 ## The three auth gates (safe on a public repo)
 
 1. Label permissions. Only Write/Triage users can add labels on a public repo,
