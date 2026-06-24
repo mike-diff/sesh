@@ -766,13 +766,24 @@ func (t *tuiConsole) SetTitle(s string) {
 // Input.
 // ---------------------------------------------------------------------------
 
-// beginInput resets the editor and takes ownership of the input row; the
-// footer itself persists between inputs.
+// beginInput takes ownership of the input row; the footer itself persists
+// between inputs. The editor is reset for a fresh line, except that a draft
+// the user was typing when the turn ended is preserved, so text entered during
+// a turn survives the working-to-completed transition instead of being
+// discarded. A draft is only carried when mask matches: a pending secret must
+// never surface in a plain prompt, and a plain draft must never read as a
+// secret. endInput already cleared the buffer on a real submit, so the only
+// surviving buf here is an unsent draft left behind by attendTurn's end.
 func (t *tuiConsole) beginInput(prompt string, mask bool) {
 	t.mu.Lock()
-	t.prompt, t.buf, t.pos, t.mask = prompt, nil, 0, mask
-	t.snippets = nil
-	t.images = nil
+	draft, dpos, dsnip, dimg := t.buf, t.pos, t.snippets, t.images
+	oldMask := t.mask
+	t.prompt, t.mask = prompt, mask
+	if mask == oldMask && len(draft) > 0 {
+		t.buf, t.pos, t.snippets, t.images = draft, dpos, dsnip, dimg
+	} else {
+		t.buf, t.pos, t.snippets, t.images = nil, 0, nil, nil
+	}
 	t.histIdx = len(t.hist)
 	t.draft = nil
 	t.winTop = 0

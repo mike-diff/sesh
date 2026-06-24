@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mike-diff/sesh/agent"
 )
@@ -550,5 +551,70 @@ func TestInputCapClampsToTerminal(t *testing.T) {
 	}
 	if c := (&tuiConsole{rows: 10, maxInputRows: 6, procStatus: "x"}).inputCap(); c != 5 {
 		t.Fatalf("process row reserved: cap=%d want 5", c)
+	}
+}
+
+// TestDraftSurvivesTurnCompletion: text typed into the message bar while a turn
+// runs must still be in the bar when the next prompt opens, instead of being
+// discarded by the editor re-open at completion. A real os.Pipe feeds the
+// keystrokes so the test controls exactly when each byte arrives: the draft is
+// typed, the turn ends (done closes) before any submit is sent, then the next
+// ReadLine must come up already holding the draft and submit it verbatim.
+// Breaker: revert beginInput to unconditionally zeroing t.buf and the submitted
+// line is empty instead of the draft.
+func TestDraftSurvivesTurnCompletion(t *testing.T) {
+	fo, err := os.CreateTemp(t.TempDir(), "tui-out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fo.Close()
+	rp, wp, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rp.Close()
+	tc := &tuiConsole{out: fo, in: bufio.NewReader(rp), cols: 80}
+
+	// Phase 1: attend a turn. Type the draft (no Enter, so it is never queued as
+	// a steer); then end the turn by closing done.
+	done := make(chan struct{})
+	attendErr := make(chan error, 1)
+	go func() {
+		attendErr <- tc.attendTurn(turnAttend{
+			done:   done,
+			cancel: func() {},
+			queue:  func(string) {},
+		})
+	}()
+	if _, err := wp.Write([]byte("draft")); err != nil { // type without submitting
+		t.Fatal(err)
+	}
+	// Give the pump time to deliver the typed runes before the turn ends, so the
+	// attend loop has edited them into the buffer. A closed done then ends
+	// attend without consuming a submit.
+	time.Sleep(100 * time.Millisecond)
+	close(done)
+	if err := <-attendErr; err != errTurnOver {
+		t.Fatalf("attendTurn err = %v, want errTurnOver", err)
+	}
+	// Phase 2: the next prompt opens. The draft must still be in the buffer; the
+	// user submits it unchanged.
+	lineErr := make(chan error, 1)
+	var line string
+	go func() {
+		l, err := tc.ReadLine("-> ")
+		line = l
+		lineErr <- err
+	}()
+	time.Sleep(100 * time.Millisecond)                // let ReadLine re-open the editor first
+	if _, err := wp.Write([]byte("\r")); err != nil { // submit the carried draft
+		t.Fatal(err)
+	}
+	if err := <-lineErr; err != nil {
+		t.Fatalf("ReadLine err = %v", err)
+	}
+	wp.Close()
+	if line != "draft" {
+		t.Fatalf("draft must survive turn completion: line = %q, want %q", line, "draft")
 	}
 }
