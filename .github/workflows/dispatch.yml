@@ -103,10 +103,35 @@ jobs:
           cache: true
 
       - name: Install sesh (checksum-verified, via the repo's own installer)
+        # install.sh downloads the rolling release, verifies its SHA-256
+        # against the published SHA256SUMS, then runs sesh -install. The
+        # rolling release is deleted and recreated on every push to main by
+        # release.yml, so releases/latest/download/<asset> 404s for the few
+        # seconds that rebuild takes. A dispatch that races that window dies
+        # on a transient 404. Retry only the fetch failures (curl 22 = HTTP
+        # error such as 404, 18 = partial transfer); a checksum mismatch is
+        # deterministic and must NOT be retried.
         run: |
-          sh ./install.sh
-          # install.sh downloads the rolling release, verifies its SHA-256
-          # against the published SHA256SUMS, then runs sesh -install.
+          set +e
+          for attempt in 1 2 3 4 5; do
+            sh ./install.sh
+            rc=$?
+            if [ "$rc" -eq 0 ]; then
+              echo "install.sh succeeded on attempt $attempt"
+              break
+            fi
+            if [ "$rc" -ne 22 ] && [ "$rc" -ne 18 ]; then
+              echo "install.sh failed with rc=$rc (non-transient); not retrying"
+              exit "$rc"
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "install.sh failed after $attempt attempts (rc=$rc)"
+              exit "$rc"
+            fi
+            echo "install.sh attempt $attempt failed (rc=$rc); the rolling release may be mid-rebuild. Retrying in 10s."
+            sleep 10
+          done
+          set -e
           ~/.local/bin/sesh -version
 
       - name: Verify config (fail fast on a bad key or endpoint)
