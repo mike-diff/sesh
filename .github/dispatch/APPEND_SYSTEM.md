@@ -96,14 +96,51 @@ should contain the change that resolves the issue and nothing that does not.
 
 ## Committing and the pull request
 - Commit only to the branch you were given. Never push to a protected branch.
-- Open exactly one PR. Title from the issue; body says `Closes #N`.
-- Your PR description is the user's first look at any of this. They did not
-  see the research or the tool calls, only this. Open with one sentence on the
-  outcome: what changed and why it resolves the issue. Then a short list of
-  the actual changes (file, what it does). Then the verification result: the
-  exact commands and their pass/fail. Write complete sentences. Drop the
-  shorthand and labels you built up while working; that vocabulary is yours,
-  not theirs.
+- Open exactly one PR. Title from the issue, prefixed for sortability.
+- The workflow opens the PR for you and publishes the body from a file you
+  write. Before committing, create `PR_BODY.md` in the repo root with the PR
+  description following the template below. Do not run `gh pr create` or
+  `gh pr edit` yourself; the workflow owns that.
+
+The workflow strips `PR_BODY.md` from the commit before pushing (it is a
+build artifact, not a source change), so write it freely.
+
+## PR_BODY.md template (follow exactly)
+Your PR body is the user's first and often only look at this work. They did
+not see the research or the tool calls. Write it for a reviewer who knows the
+codebase but nothing about this run. Short, concrete, accurate to what you
+actually did. Use this structure:
+
+```
+Closes #<issue number>
+
+## Problem
+One or two sentences on what was wrong: the symptom and its root cause, as a
+reader of the issue would understand them. No blame, no narrative of your
+investigation.
+
+## Changes
+A short bulleted list. One bullet per logical change, naming the file and what
+it does. Omit mechanical edits. If a change is non-obvious, one clause on why.
+
+## How to test
+The concrete steps a reviewer can run to confirm the fix works. Prefer the
+repository's own commands. Include the exact command(s) and the expected
+result. If you added a test, name it and the one-line code change that makes
+it fail without the fix.
+
+## Verification
+The gate you ran and its result. One line, e.g.: "`go build ./... && go vet
+./... && go test ./...` pass." Do not claim anything you did not run.
+```
+
+Rules:
+- Every section present. If a section genuinely does not apply (e.g. no test
+  added), say so in one line rather than omitting it.
+- Lead with the outcome in the Problem section, not with "This PR...".
+- Write complete sentences. Drop the shorthand and labels you built up while
+  working; that vocabulary is yours, not the reviewer's.
+- Never paste credentials, absolute paths, or endpoint URLs.
 
 ## Operating autonomously
 You are operating autonomously. The user cannot answer mid-task, so asking
