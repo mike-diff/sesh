@@ -168,7 +168,12 @@ jobs:
           else
             git commit -m "dispatch: resolve #${ISSUE_NUMBER}" -q
           fi
-          git push -u origin "$BRANCH"
+          # Force-push: a dispatch branch is a disposable throwaway owned by one
+          # issue. Re-dispatching the same issue (e.g. after a closed prior PR
+          # whose branch was not deleted) must replace the remote branch, not be
+          # rejected by it. There is never independent work on a dispatch branch
+          # that a fresh run would not reproduce.
+          git push -u --force origin "$BRANCH"
 
           gh pr create \
             --base "$BASE" \
