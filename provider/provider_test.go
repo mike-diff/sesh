@@ -380,3 +380,125 @@ func TestSSECancel(t *testing.T) {
 		t.Fatalf("sse must report the cancellation, got %v", err)
 	}
 }
+
+// TestAnthropicEmptyAssistantContent: an assistant turn with neither text nor
+// tool calls must serialize as a text block, never content:null, which the
+// Messages API rejects with a 400 for every later call in the session.
+// Breaker: remove the empty-blocks guard in the Anthropic serializer and the
+// captured body carries null again.
+func TestAnthropicEmptyAssistantContent(t *testing.T) {
+	var body map[string]any
+	srv := sseServer(t, &body, &http.Header{},
+		`{"type":"message_start","message":{"usage":{"input_tokens":3}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+		`{"type":"message_stop"}`)
+	defer srv.Close()
+	p := Anthropic{BaseURL: srv.URL, Model: "m-empty-content"}
+	_, err := p.Chat(context.Background(), "sys", []agent.Turn{
+		{Role: "user", Text: "hi"},
+		{Role: "assistant"}, // a cancelled or empty reply, saved and resumed
+		{Role: "user", Text: "again"},
+	}, nil, func(string) {}, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range body["messages"].([]any) {
+		if m.(map[string]any)["role"] != "assistant" {
+			continue
+		}
+		content := m.(map[string]any)["content"]
+		if content == nil {
+			t.Fatalf("assistant turn serialized as content:null: %v", body["messages"])
+		}
+	}
+}
+
+// TestAnthropicMaxTokensField: the adapter sends the configured MaxTokens and
+// falls back to the 16000 default when unset.
+// Breaker: hardcode 16000 again and the 4096 assertion fails; drop the
+// default and the unset half fails.
+func TestAnthropicMaxTokensField(t *testing.T) {
+	send := func(mt int) map[string]any {
+		var body map[string]any
+		srv := sseServer(t, &body, &http.Header{},
+			`{"type":"message_start","message":{"usage":{"input_tokens":3}}}`,
+			`{"type":"message_stop"}`)
+		defer srv.Close()
+		p := Anthropic{BaseURL: srv.URL, Model: "m-mt", MaxTokens: mt}
+		if _, err := p.Chat(context.Background(), "s", []agent.Turn{{Role: "user", Text: "x"}}, nil, func(string) {}, func(string) {}); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	if got := send(4096)["max_tokens"].(float64); got != 4096 {
+		t.Fatalf("configured max_tokens not on the wire: %v", got)
+	}
+	if got := send(0)["max_tokens"].(float64); got != 16000 {
+		t.Fatalf("default max_tokens changed: %v", got)
+	}
+}
+
+// TestAnthropicMaxTokensSelfHeal: a 400 whose message states the model's real
+// output cap ("max_tokens: N > M, which is the maximum allowed...") makes the
+// adapter clamp to M and retry once, and remember M for the model so later
+// calls start there.
+// Breaker: remove the overflow check and the first response errors out; drop
+// the remembered cap and the third request still sends 16000.
+func TestAnthropicMaxTokensSelfHeal(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var m map[string]any
+		json.Unmarshal(b, &m)
+		bodies = append(bodies, m)
+		if m["max_tokens"].(float64) > 8192 {
+			w.WriteHeader(400)
+			fmt.Fprintf(w, `{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: %.0f > 8192, which is the maximum allowed number of output tokens for m-legacy"}}`, m["max_tokens"].(float64))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer srv.Close()
+	p := Anthropic{BaseURL: srv.URL, Model: "m-legacy"}
+	for i := 0; i < 2; i++ {
+		if _, err := p.Chat(context.Background(), "s", []agent.Turn{{Role: "user", Text: "x"}}, nil, func(string) {}, func(string) {}); err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+	if len(bodies) != 3 {
+		t.Fatalf("want 3 requests (overflow, retry, remembered), got %d", len(bodies))
+	}
+	if got := bodies[0]["max_tokens"].(float64); got != 16000 {
+		t.Fatalf("first request max_tokens = %v, want the 16000 default", got)
+	}
+	for i, b := range bodies[1:] {
+		if b["max_tokens"].(float64) != 8192 {
+			t.Fatalf("request %d max_tokens = %v, want the server-stated cap 8192", i+1, b["max_tokens"])
+		}
+	}
+}
+
+// TestOpenAIMaxTokensOnlyWhenSet: the OpenAI adapter sends max_tokens only
+// when explicitly configured, so the default wire shape is unchanged.
+// Breaker: always send it and the "absent" half fails.
+func TestOpenAIMaxTokensOnlyWhenSet(t *testing.T) {
+	send := func(mt int) map[string]any {
+		var body map[string]any
+		srv := sseServer(t, &body, &http.Header{}, `data-unused`)
+		defer srv.Close()
+		p := OpenAI{BaseURL: srv.URL, Model: "m-oai", MaxTokens: mt}
+		p.Chat(context.Background(), "s", []agent.Turn{{Role: "user", Text: "x"}}, nil, func(string) {}, func(string) {})
+		return body
+	}
+	if _, ok := send(0)["max_tokens"]; ok {
+		t.Fatal("unset max_tokens must not be sent")
+	}
+	if got := send(4096)["max_tokens"].(float64); got != 4096 {
+		t.Fatalf("configured max_tokens not sent: %v", got)
+	}
+}

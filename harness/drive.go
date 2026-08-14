@@ -16,6 +16,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -96,16 +97,46 @@ Reply with ONLY a JSON object: {"done": bool, "blocked": bool, "reason": "..."}
 
 // judgeGoal returns the verdict and the judge call's own token usage, so the
 // driver can count it: the judge runs every iteration and is real spend the
-// status line would otherwise miss.
+// status line would otherwise miss. A reply with no readable JSON is an
+// *errJudgeParse, not a transport failure: the drive retries it once and then
+// defaults to not-done, because weak judges wrap verdicts in prose and an
+// unparseable verdict must not stop work that the bounds already cap.
 func judgeGoal(ctx context.Context, p agent.Provider, request, transcript string) (verdict, agent.Usage, error) {
 	prompt := steerPrompt("judge", judgeInstructions) + "\n\n<request>\n" + request + "\n</request>\n\n<transcript>\n" + transcript + "\n</transcript>"
+	return judgeCall(ctx, p, prompt)
+}
+
+// judgeGoalRepair re-asks a judge whose reply carried no JSON, quoting the
+// malformed reply so the same mistake is less likely twice.
+func judgeGoalRepair(ctx context.Context, p agent.Provider, request, transcript, badReply string) (verdict, agent.Usage, error) {
+	prompt := steerPrompt("judge", judgeInstructions) +
+		"\n\nYour previous reply was not a bare JSON object, so it could not be read:\n<previous_reply>\n" + badReply + "\n</previous_reply>\n" +
+		"Reply again with ONLY the JSON object: {\"done\": bool, \"blocked\": bool, \"reason\": \"...\"}\n\n" +
+		"<request>\n" + request + "\n</request>\n\n<transcript>\n" + transcript + "\n</transcript>"
+	return judgeCall(ctx, p, prompt)
+}
+
+func judgeCall(ctx context.Context, p agent.Provider, prompt string) (verdict, agent.Usage, error) {
 	out, used, err := agent.Run(ctx, p, "You judge request completion from transcript evidence.",
 		[]agent.Turn{{Role: "user", Text: prompt}}, nil, agent.Hooks{})
 	if err != nil {
 		return verdict{}, used, err
 	}
 	v, err := parseVerdict(lastText(out))
-	return v, used, err
+	if err != nil {
+		return verdict{}, used, &errJudgeParse{raw: compact(lastText(out))}
+	}
+	return v, used, nil
+}
+
+// errJudgeParse marks a judge reply that carried no readable JSON object.
+type errJudgeParse struct{ raw string }
+
+func (e *errJudgeParse) Error() string { return "judge reply unparseable: " + e.raw }
+
+func isJudgeParseErr(err error) bool {
+	var e *errJudgeParse
+	return errors.As(err, &e)
 }
 
 // parseVerdict digs the JSON object out of a reply that may wrap it in fences
@@ -184,12 +215,26 @@ func drive(r *repl, cfg driveConfig, firstTurns []agent.Turn) int {
 			// Escape pauses the drive during the judge phase too (not just during a
 			// streamed worker iteration).
 			jctx, jdone := turnCtx()
+			transcript := renderTranscript(iterTurns, 300)
 			var jUsed agent.Usage
 			var jerr error
-			v, jUsed, jerr = judgeGoal(jctx, r.p, cfg.request, renderTranscript(iterTurns, 300))
+			v, jUsed, jerr = judgeGoal(jctx, r.p, cfg.request, transcript)
+			if isJudgeParseErr(jerr) {
+				r.accountAux(jUsed)
+				say("== judge reply unparseable; asking once more for JSON only")
+				var ru agent.Usage
+				v, ru, jerr = judgeGoalRepair(jctx, r.p, cfg.request, transcript, jerr.Error())
+				jUsed = jUsed.Add(ru)
+			}
 			jdone()
 			r.accountAux(jUsed) // the judge is real spend; count it, leave the gauge
 			switch {
+			case isJudgeParseErr(jerr):
+				// Twice unparseable: keep working under the existing bounds
+				// (max-iters, no-progress, Ctrl-C) instead of stopping. The
+				// fallback reason steers the next iteration at verification.
+				v = verdict{Reason: "the judge's reply was unparseable, so there is no verdict; verify the work with bash (run the build and tests) and finish what you can"}
+				say("== judge reply unparseable twice; continuing with a verification pass")
 			case jerr != nil:
 				if isCanceled(jerr) {
 					say("== paused; your next message steers")
@@ -239,9 +284,15 @@ func drive(r *repl, cfg driveConfig, firstTurns []agent.Turn) int {
 			emit("\n")
 		}
 		if err != nil {
-			// Roll back the unconsumed opening (consecutive user turns would
-			// poison the next call).
-			r.history = r.history[:mark]
+			// Completed exchanges stay: their side effects are on disk, and a
+			// model that believes its own edits never happened diverges from
+			// the tree. Only an opening that consumed nothing rolls back (it
+			// would otherwise sit as a second consecutive user turn).
+			if len(out) > mark+1 {
+				r.history = out
+			} else {
+				r.history = r.history[:mark]
+			}
 			r.sess.Turns = r.history
 			r.sess.save()
 			if isCanceled(err) {

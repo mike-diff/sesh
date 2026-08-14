@@ -33,6 +33,12 @@ type Profile struct {
 	// CustomModel is one user-added model the endpoint did not list, remembered
 	// per provider so it persists and stays in /model.
 	CustomModel string `json:"custom_model,omitempty"`
+	// MaxTokens caps one reply's output tokens. 0 (the default) keeps the
+	// protocol's own policy: the anthropic adapter uses the max_output_tokens
+	// dial (default 16000), the openai adapter sends no cap. Set it for a
+	// strict gateway that requires one, or to bound spend on a model whose
+	// own cap is smaller than the default.
+	MaxTokens int `json:"max_tokens,omitempty"`
 	// Vision is the tri-state override for whether this profile's model can see
 	// images: nil leaves it to the model-name heuristic, true or false forces it.
 	// It is the escape hatch named in the paste-blocked guidance.
@@ -101,6 +107,7 @@ type providerSpec struct {
 	protocol, url, model string
 	key, keyEnv          string
 	ctxLimit             int
+	maxTokens            int // profile output cap; 0 = the protocol's own default
 }
 
 // selection carries the raw command-line choice into resolveSpec. explicit
@@ -136,6 +143,7 @@ func resolveSpec(sel selection, sess *Session, cfg ProvidersConfig, creds map[st
 			s.key = creds[name]
 		}
 		s.ctxLimit = prof.Context
+		s.maxTokens = prof.MaxTokens
 	} else if sel.explicit["provider"] {
 		return s, err
 	}

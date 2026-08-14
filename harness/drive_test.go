@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -449,4 +450,83 @@ func (p promptSpy) Chat(_ context.Context, _ string, h []agent.Turn, _ []agent.T
 	*p.saw = h[len(h)-1].Text
 	onText(p.reply)
 	return agent.Reply{Text: p.reply}, nil
+}
+
+// TestDriveJudgeParseRetry: one unparseable judge verdict gets a single
+// JSON-only retry; a clean verdict on the retry keeps the drive honest
+// instead of stopping it.
+// Breaker: return driveBlocked on the first parse error (the old behavior)
+// and this returns blocked, not done.
+func TestDriveJudgeParseRetry(t *testing.T) {
+	p := &seqChat{fns: []func(context.Context) (agent.Reply, error){
+		reply("The work looks finished to me."),                           // judge, prose
+		reply(`{"done": true, "blocked": false, "reason": "tests pass"}`), // judge, repaired
+	}}
+	r := driveRepl(t, p, workTurns())
+	_, count := counting()
+	if code := drive(r, driveConfig{request: "fix the bug", maxIters: 25, mutations: count, say: func(string, ...any) {}}, workTurns()); code != driveDone {
+		t.Fatalf("a repaired verdict must end the drive as done, got %d", code)
+	}
+}
+
+// TestDriveJudgeParseFallback: two unparseable verdicts default to not-done
+// with a verification-focused reason, so the loop keeps working under its
+// existing bounds instead of stopping (the drive-loop's whole point on weak
+// local judges).
+// Breaker: return driveBlocked after the retry (or immediately) and the drive
+// stops before the worker iteration.
+func TestDriveJudgeParseFallback(t *testing.T) {
+	p := &seqChat{fns: []func(context.Context) (agent.Reply, error){
+		reply("I think it is done."),                                      // judge, prose
+		reply("Still looks complete."),                                    // judge, prose again
+		reply("verified, all tests pass"),                                 // the driven iteration's worker
+		reply(`{"done": true, "blocked": false, "reason": "tests pass"}`), // judge
+	}}
+	r := driveRepl(t, p, workTurns())
+	_, count := counting()
+	if code := drive(r, driveConfig{request: "fix the bug", maxIters: 25, mutations: count, say: func(string, ...any) {}}, workTurns()); code != driveDone {
+		t.Fatalf("fallback must keep driving to done, got %d", code)
+	}
+	// The fallback's iteration prompt must steer toward verification.
+	for _, t2 := range r.history {
+		if t2.Role == "user" && strings.Contains(t2.Text, "unparseable") {
+			return
+		}
+	}
+	t.Fatal("the fallback reason must reach the next iteration's prompt")
+}
+
+// TestDriveIterationErrorKeepsWork: when a driven iteration fails after some
+// of its tool work completed, the completed turns stay in history (their side
+// effects are on disk); only a failure before any assistant reply rolls the
+// opening back.
+// Breaker: restore the unconditional r.history[:mark] in the drive error
+// path and the tool turn disappears.
+func TestDriveIterationErrorKeepsWork(t *testing.T) {
+	toolTurn := func(context.Context) (agent.Reply, error) {
+		return agent.Reply{Calls: []agent.ToolCall{{ID: "c1", Name: "bash", Args: []byte(`{"command":"echo done"}`)}}}, nil
+	}
+	p := &seqChat{fns: []func(context.Context) (agent.Reply, error){
+		reply(`{"done": false, "blocked": false, "reason": "insufficient evidence: verify"}`), // judge
+		toolTurn, // iteration: assistant asks bash, result lands
+		func(context.Context) (agent.Reply, error) { return agent.Reply{}, errors.New("HTTP 400: boom") },
+		reply(`{"done": true, "blocked": false, "reason": "recovered"}`), // judge after retry iteration
+	}}
+	r := driveRepl(t, p, workTurns())
+	_, count := counting()
+	code := drive(r, driveConfig{request: "fix the bug", maxIters: 25, mutations: count, say: func(string, ...any) {}}, workTurns())
+	if code != driveDone {
+		t.Fatalf("drive must continue after a mid-iteration error, got %d", code)
+	}
+	kept := false
+	for i, t2 := range r.history {
+		if t2.Role == "assistant" && len(t2.Calls) > 0 && t2.Calls[0].Name == "bash" {
+			if i+1 < len(r.history) && r.history[i+1].Role == "tool" {
+				kept = true
+			}
+		}
+	}
+	if !kept {
+		t.Fatal("completed tool work must survive a failed iteration")
+	}
 }

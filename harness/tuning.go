@@ -89,6 +89,13 @@ type Tuning struct {
 	// cheap-brief experiment.
 	BriefProvider string `json:"brief_provider,omitempty"`
 	BriefModel    string `json:"brief_model,omitempty"`
+	// MaxOutputTokens caps one reply's output tokens on the anthropic
+	// protocol (the Messages API 400s a value above the model's own cap, so
+	// this must not exceed the smallest cap among the models you run; a 400
+	// that names the real cap self-heals to it for the session). Default
+	// 16000. Not applied to the openai protocol, where sesh sends no cap
+	// unless the profile sets one (max_tokens).
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 	// UpdateCheck, when on, has interactive startup ask the latest release
 	// whether a newer build exists and, if so, print a one-line nudge to run
 	// /update. Default off: it is a network call to GitHub on every launch, so
@@ -112,6 +119,7 @@ func defaultTuning() Tuning {
 		DiffLines:         40,
 		SkillManifestMax:  50,
 		McpManifestMax:    100,
+		MaxOutputTokens:   16000,
 		ProcPromoteSecs:   60,
 		MaxProcs:          10,
 		ProcLogTail:       200,
@@ -206,6 +214,7 @@ func overlayTuning(t *Tuning, got Tuning) {
 	set(&t.RecallLinks, got.RecallLinks)
 	set(&t.SkillManifestMax, got.SkillManifestMax)
 	set(&t.McpManifestMax, got.McpManifestMax)
+	set(&t.MaxOutputTokens, got.MaxOutputTokens)
 	set(&t.ProcPromoteSecs, got.ProcPromoteSecs)
 	set(&t.MaxProcs, got.MaxProcs)
 	set(&t.ProcLogTail, got.ProcLogTail)

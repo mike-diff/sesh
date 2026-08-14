@@ -68,6 +68,12 @@
   // "seed_ledger_entries": 10,  // chain-ledger entries carried in a handoff seed
   // "recall_links": 50,         // chain links one recall call searches
   // "diff_lines": 40,           // edit/write diff lines fed back (-1 disables)
+  // "max_output_tokens": 16000, // output-token cap per reply, anthropic
+  //                             // protocol only. The Messages API 400s a value
+  //                             // above the model's own cap; when a 400 names
+  //                             // the real cap sesh adopts it for the session,
+  //                             // so legacy models self-heal. Per-profile:
+  //                             // "max_tokens" in providers.json (openai too).
   // "update_check": false,      // true: interactive startup checks GitHub for a
   //                             // newer build and nudges you to run /update
   // "input_max_rows": 6,        // rows the input editor grows to before it

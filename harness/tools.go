@@ -276,17 +276,36 @@ func doWrite(path, content string, unsafe bool) (string, bool) {
 		return msg, true
 	}
 	// Overwriting is the risky case: capture what is being replaced so the
-	// result can show the change, not just the byte count.
+	// result can show the change, not just the byte count, and the target's
+	// permissions so they survive the swap: write-then-rename replaces the
+	// inode, and a plain 0644 tmp file would strip a script's exec bit or
+	// widen a private file on every overwrite.
 	prev, hadPrev := "", false
+	mode := os.FileMode(0o644)
 	if b, err := os.ReadFile(path); err == nil {
 		prev, hadPrev = string(b), true
+	}
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
 	}
 	os.MkdirAll(filepath.Dir(path), 0o755)
 	// Write-then-rename, same as the harness's own state files: a crash
 	// mid-write must not leave the user's file truncated.
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
 		return err.Error(), true
+	}
+	_, werr := f.WriteString(content)
+	if werr == nil {
+		werr = f.Chmod(mode) // OpenFile filters mode through umask; chmod does not
+	}
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		os.Remove(tmp)
+		return werr.Error(), true
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
