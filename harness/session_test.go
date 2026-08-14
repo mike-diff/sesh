@@ -145,7 +145,7 @@ func TestSessionMetaReadsOnlyTheHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, ok := loadSessionMeta(path)
-	if !ok || m.ID != s.ID || m.Cwd != "/proj" || m.Provider != "p1" || m.Model != "m1" {
+	if !ok || m.ID != s.ID || m.Cwd != "/proj" {
 		t.Fatalf("meta fields wrong: %+v ok=%v", m, ok)
 	}
 	if m.Child != "" {
@@ -166,23 +166,23 @@ func TestSessionMetaReadsOnlyTheHead(t *testing.T) {
 	}
 }
 
-// TestSessionMetaFallbackBeyondHead: when the header itself is bigger than
-// the meta read (a ledger that huge), the caller falls back to a full load
-// instead of returning nothing.
-// Breaker: return ok=false without a fallback in allMetas-style callers and
-// the good session next to the huge one disappears.
+// TestSessionMetaFallbackBeyondHead: when a session's header itself is bigger
+// than the meta window (a title or ledger that huge), the scan falls back to
+// a full load, so the session stays visible to brain adoption instead of
+// silently vanishing the way a bare ok=false would make it.
+// Breaker: drop the loadSession fallback in allMetas and the huge session
+// disappears from the metas, so lastBrain("/deep") returns nil.
 func TestSessionMetaFallbackBeyondHead(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	os.MkdirAll(sessionsDir(), 0o755)
-	// A hand-written file whose "turns" key sits past the 64KB meta window.
-	huge := []byte(`{"id":"` + strings.Repeat("a", 200_000) + `","cwd":"/nowhere","turns":[]}`)
-	os.WriteFile(filepath.Join(sessionsDir(), "20260101-130000-00000001.json"), huge, 0o644)
-	good := &Session{ID: "20260101-140000-00000002", Cwd: "/good", Protocol: "openai",
-		URL: "http://x", Model: "m9", Turns: []agent.Turn{{Role: "user", Text: "hi"}, {Role: "assistant", Text: "yo"}}}
-	if err := good.save(); err != nil {
+	// A realistic shape: id matches the filename (as every real session does),
+	// and the bloat lives in the title so "turns" sits past the 64KB window.
+	huge := []byte(`{"id":"20260101-130000-00000001","title":"` + strings.Repeat("x", 200_000) +
+		`","cwd":"/deep","protocol":"openai","url":"http://x","model":"m9","updated":"2026-01-02T00:00:00Z","turns":[]}`)
+	if err := os.WriteFile(filepath.Join(sessionsDir(), "20260101-130000-00000001.json"), huge, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := lastBrain("/good"); got == nil || got.ID != good.ID {
-		t.Fatalf("lastBrain must find the good session beside the huge one, got %+v", got)
+	if got := lastBrain("/deep"); got == nil || got.ID != "20260101-130000-00000001" {
+		t.Fatalf("a session with a huge header must still be found via the full-load fallback, got %+v", got)
 	}
 }

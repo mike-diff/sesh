@@ -186,20 +186,16 @@ func pidAlive(pid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-// sessionMeta is the listing-relevant header of a session file: everything
-// the startup scans need, none of the transcript. Read without parsing the
-// turns tail, so startup stays O(header bytes) across every saved session
-// instead of O(all transcripts ever written).
+// sessionMeta is the header a startup scan needs: none of the transcript.
+// Read without parsing the turns tail, so startup stays O(header bytes)
+// across every saved session instead of O(all transcripts ever written).
+// Only the fields the scans consume live here; anything else would be
+// unused weight.
 type sessionMeta struct {
-	ID       string    `json:"id"`
-	Title    string    `json:"title"`
-	Cwd      string    `json:"cwd"`
-	Provider string    `json:"provider"`
-	Protocol string    `json:"protocol"`
-	URL      string    `json:"url"`
-	Model    string    `json:"model"`
-	Child    string    `json:"continued_by"`
-	Updated  time.Time `json:"updated"`
+	ID      string    `json:"id"`
+	Cwd     string    `json:"cwd"`
+	Child   string    `json:"continued_by"`
+	Updated time.Time `json:"updated"`
 }
 
 // metaHeadBytes bounds the meta read. turns is the last key in the struct, so
@@ -260,10 +256,7 @@ func allMetas() []sessionMeta {
 			continue
 		}
 		if s, err := loadSession(strings.TrimSuffix(e.Name(), ".json")); err == nil {
-			out = append(out, sessionMeta{
-				ID: s.ID, Title: s.Title, Cwd: s.Cwd, Provider: s.Provider,
-				Protocol: s.Protocol, URL: s.URL, Model: s.Model, Child: s.Child, Updated: s.Updated,
-			})
+			out = append(out, sessionMeta{ID: s.ID, Cwd: s.Cwd, Child: s.Child, Updated: s.Updated})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Updated.After(out[j].Updated) })
