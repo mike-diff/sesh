@@ -249,7 +249,7 @@ func rigProviderEnv(t *testing.T, provEnv, modelEnv string) (agent.Provider, str
 	if err := resolveDefaults(prof.Protocol, &prof.URL, &model); err != nil {
 		t.Fatalf("rig provider: %v", err)
 	}
-	p, err := buildProvider(prof.Protocol, prof.URL, model, key, prof.KeyEnv)
+	p, err := buildProvider(prof.Protocol, prof.URL, model, key, prof.KeyEnv, prof.dials())
 	if err != nil {
 		t.Fatalf("rig provider: %v", err)
 	}

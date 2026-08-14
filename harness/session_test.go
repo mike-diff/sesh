@@ -1,8 +1,10 @@
 package harness
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -120,5 +122,67 @@ func TestSessionLocks(t *testing.T) {
 	releaseLock("lk-4")
 	if _, err := os.Stat(lockPath("lk-4")); err != nil {
 		t.Fatal("release must not remove a lock it does not own")
+	}
+}
+
+// TestSessionMetaReadsOnlyTheHead: the meta reader extracts a session's
+// header fields without parsing the transcript, proven by a file whose turns
+// tail is torn (full load fails, meta read succeeds). This is what keeps
+// startup O(head bytes) across every saved session instead of O(all
+// transcripts).
+// Breaker: make loadSessionMeta fall back to a full parse and the torn-tail
+// half fails (a full parse cannot survive the tear).
+func TestSessionMetaReadsOnlyTheHead(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := &Session{
+		ID: "20260101-120000-ab12cd34", Title: "the work", Cwd: "/proj",
+		Provider: "p1", Protocol: "openai", URL: "http://x", Model: "m1",
+		Updated: time.Now(),
+		Turns:   []agent.Turn{{Role: "user", Text: strings.Repeat("x", 400_000)}},
+	}
+	path := filepath.Join(sessionsDir(), s.ID+".json")
+	if err := s.save(); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := loadSessionMeta(path)
+	if !ok || m.ID != s.ID || m.Cwd != "/proj" {
+		t.Fatalf("meta fields wrong: %+v ok=%v", m, ok)
+	}
+	if m.Child != "" {
+		t.Fatalf("unsealed session must have no child, got %q", m.Child)
+	}
+
+	// Tear the tail: truncate inside the turns array, past the header.
+	b, _ := os.ReadFile(path)
+	cut := bytes.Index(b, []byte(`"turns":`)) + 200
+	if err := os.WriteFile(path, b[:cut], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadSession(s.ID); err == nil {
+		t.Fatal("precondition: a torn file must fail a full load")
+	}
+	if m, ok := loadSessionMeta(path); !ok || m.ID != s.ID || m.Cwd != "/proj" {
+		t.Fatalf("meta must survive a torn tail: %+v ok=%v", m, ok)
+	}
+}
+
+// TestSessionMetaFallbackBeyondHead: when a session's header itself is bigger
+// than the meta window (a title or ledger that huge), the scan falls back to
+// a full load, so the session stays visible to brain adoption instead of
+// silently vanishing the way a bare ok=false would make it.
+// Breaker: drop the loadSession fallback in allMetas and the huge session
+// disappears from the metas, so lastBrain("/deep") returns nil.
+func TestSessionMetaFallbackBeyondHead(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	os.MkdirAll(sessionsDir(), 0o755)
+	// A realistic shape: id matches the filename (as every real session does),
+	// and the bloat lives in the title so "turns" sits past the 64KB window.
+	huge := []byte(`{"id":"20260101-130000-00000001","title":"` + strings.Repeat("x", 200_000) +
+		`","cwd":"/deep","protocol":"openai","url":"http://x","model":"m9","updated":"2026-01-02T00:00:00Z","turns":[]}`)
+	if err := os.WriteFile(filepath.Join(sessionsDir(), "20260101-130000-00000001.json"), huge, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastBrain("/deep"); got == nil || got.ID != "20260101-130000-00000001" {
+		t.Fatalf("a session with a huge header must still be found via the full-load fallback, got %+v", got)
 	}
 }

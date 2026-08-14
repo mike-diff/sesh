@@ -30,6 +30,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mike-diff/sesh/agent"
 )
@@ -440,7 +441,7 @@ func dialHTTP(conf mcpServerConf) *httpTransport {
 	for k, v := range conf.Headers {
 		h[k] = os.Expand(v, os.Getenv)
 	}
-	return &httpTransport{url: conf.URL, headers: h, client: &http.Client{Timeout: bashTimeout}}
+	return &httpTransport{url: conf.URL, headers: h, client: &http.Client{Timeout: time.Duration(tune.McpTimeoutSecs) * time.Second}}
 }
 
 func (h *httpTransport) diagTail() string { return "" }
@@ -593,7 +594,7 @@ func runMCP(ctx context.Context, pool *mcpPool, raw json.RawMessage) (string, bo
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return "invalid tool input: " + err.Error(), true
 	}
-	ctx, cancel := context.WithTimeout(ctx, bashTimeout)
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(tune.McpTimeoutSecs)*time.Second)
 	defer cancel()
 	c, err := pool.get(ctx, in.Server)
 	if err != nil {

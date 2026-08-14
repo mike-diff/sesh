@@ -18,9 +18,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mike-diff/sesh/agent"
@@ -225,6 +227,74 @@ func (a *callAccum) collect() []agent.ToolCall {
 
 type Anthropic struct {
 	BaseURL, Key, Model string
+	// MaxTokens caps one reply's output tokens. 0 means the 16000 default;
+	// a 400 that names the model's real cap self-heals to that cap (see
+	// overflowCap), so legacy models with smaller limits keep working.
+	MaxTokens int
+	// ThinkingBudget enables extended thinking with this per-reply budget
+	// (thinking tokens bill as output). 0, the default, sends no thinking
+	// parameter; when set, max_tokens is raised to clear the budget.
+	ThinkingBudget int
+}
+
+// defaultMaxTokens is the output budget when none is configured. It must
+// stay at or below the smallest cap among models users actually run, which
+// the self-heal path backstops when it does not.
+const defaultMaxTokens = 16000
+
+// maxTokensOverflowRe matches the API's stated overflow ("max_tokens: 16000
+// > 8192, which is the maximum allowed number of output tokens for ...").
+var maxTokensOverflowRe = regexp.MustCompile(`max_tokens: (\d+) > (\d+)`)
+
+// Server-stated output caps, remembered per model for the process lifetime
+// so one 400 teaches every later call (adapter values are copied around, so
+// the map is package-level). Mutex-guarded: parallel task subagents call
+// concurrently.
+var (
+	outputCapsMu sync.Mutex
+	outputCaps   = map[string]int{}
+)
+
+func rememberedOutputCap(model string) int {
+	outputCapsMu.Lock()
+	defer outputCapsMu.Unlock()
+	return outputCaps[model]
+}
+
+func rememberOutputCap(model string, cap int) {
+	outputCapsMu.Lock()
+	outputCaps[model] = cap
+	outputCapsMu.Unlock()
+}
+
+// overflowCap extracts the server-stated cap from an error, if that error is
+// the documented max_tokens overflow rejection.
+func overflowCap(err error) (int, bool) {
+	apiErr, ok := err.(*APIError)
+	if !ok || apiErr.Status != 400 {
+		return 0, false
+	}
+	m := maxTokensOverflowRe.FindStringSubmatch(apiErr.Message)
+	if m == nil {
+		return 0, false
+	}
+	n, perr := strconv.Atoi(m[2])
+	if perr != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// maxTokensFor resolves the output cap for a call: a remembered server-stated
+// cap wins (it is ground truth), then the configured value, then the default.
+func (p Anthropic) maxTokensFor() int {
+	if c := rememberedOutputCap(p.Model); c > 0 {
+		return c
+	}
+	if p.MaxTokens > 0 {
+		return p.MaxTokens
+	}
+	return defaultMaxTokens
 }
 
 // markLastMessage sets a cache breakpoint on the final content block of the
@@ -250,6 +320,7 @@ func markLastMessage(msgs []map[string]any, ephemeral map[string]any) {
 
 func (p Anthropic) Chat(ctx context.Context, system string, history []agent.Turn, tools []agent.ToolDef, onText, onThink func(string)) (agent.Reply, error) {
 	var msgs []map[string]any
+	lastAssistant, lastThinking := -1, []agent.ThinkingBlock(nil)
 	for _, t := range history {
 		switch t.Role {
 		case "user":
@@ -280,7 +351,14 @@ func (p Anthropic) Chat(ctx context.Context, system string, history []agent.Turn
 			for _, c := range t.Calls {
 				blocks = append(blocks, map[string]any{"type": "tool_use", "id": c.ID, "name": c.Name, "input": c.Args})
 			}
+			if len(blocks) == 0 {
+				// A saved empty reply (or one kept after a mid-batch failure)
+				// serializes to content:null otherwise, which the Messages API
+				// rejects with a 400 for every later call in the session.
+				blocks = []map[string]any{{"type": "text", "text": "(empty reply)"}}
+			}
 			msgs = append(msgs, map[string]any{"role": "assistant", "content": blocks})
+			lastAssistant, lastThinking = len(msgs)-1, t.Thinking
 		case "tool":
 			var blocks []map[string]any
 			for _, r := range t.Results {
@@ -303,12 +381,37 @@ func (p Anthropic) Chat(ctx context.Context, system string, history []agent.Turn
 	// field. Two breakpoints: the system block caches the stable prefix (tools +
 	// system), and the last message caches the growing history, so each call
 	// re-reads the prior turns at the cached price instead of full price.
+	// Thinking is enabled by an explicit budget. The API requires the final
+	// assistant message to lead with its thinking blocks (signatures intact)
+	// when a thinking conversation continues, so they go back on the wire for
+	// exactly that turn; older turns' blocks are dead weight and stay off.
+	maxTokens := p.maxTokensFor()
+	if p.ThinkingBudget > 0 {
+		if lastAssistant >= 0 && len(lastThinking) > 0 {
+			var blocks []map[string]any
+			for _, tb := range lastThinking {
+				if tb.RedactedData != "" {
+					blocks = append(blocks, map[string]any{"type": "redacted_thinking", "data": tb.RedactedData})
+				} else {
+					blocks = append(blocks, map[string]any{"type": "thinking", "thinking": tb.Text, "signature": tb.Signature})
+				}
+			}
+			content := msgs[lastAssistant]["content"].([]map[string]any)
+			msgs[lastAssistant]["content"] = append(blocks, content...)
+		}
+		if margin := p.ThinkingBudget + 8000; maxTokens < margin {
+			maxTokens = margin // max_tokens must clear the thinking budget
+		}
+	}
 	ephemeral := map[string]any{"type": "ephemeral"}
 	markLastMessage(msgs, ephemeral)
 	body := map[string]any{
-		"model": p.Model, "max_tokens": 16000,
+		"model": p.Model, "max_tokens": maxTokens,
 		"system":   []map[string]any{{"type": "text", "text": system, "cache_control": ephemeral}},
 		"messages": msgs, "stream": true,
+	}
+	if p.ThinkingBudget > 0 {
+		body["thinking"] = map[string]any{"type": "enabled", "budget_tokens": p.ThinkingBudget}
 	}
 	if len(toolsParam) > 0 {
 		body["tools"] = toolsParam
@@ -316,6 +419,15 @@ func (p Anthropic) Chat(ctx context.Context, system string, history []agent.Turn
 
 	resp, err := post(ctx, strings.TrimRight(p.BaseURL, "/")+"/v1/messages",
 		map[string]string{"x-api-key": p.Key, "anthropic-version": "2023-06-01"}, body)
+	if cap, ok := overflowCap(err); ok {
+		// The server says this model caps below what we asked: clamp to the
+		// stated cap, remember it, and retry once. Without this, any model
+		// whose cap sits under the configured default fails every call.
+		rememberOutputCap(p.Model, cap)
+		body["max_tokens"] = cap
+		resp, err = post(ctx, strings.TrimRight(p.BaseURL, "/")+"/v1/messages",
+			map[string]string{"x-api-key": p.Key, "anthropic-version": "2023-06-01"}, body)
+	}
 	if err != nil {
 		return agent.Reply{}, err
 	}
@@ -326,6 +438,10 @@ func (p Anthropic) Chat(ctx context.Context, system string, history []agent.Turn
 	calls := newCallAccum()
 	var text strings.Builder
 	var reply agent.Reply
+	// Thinking blocks accumulate by content-block index until they close, so
+	// the finished blocks (text plus signature) can ride back on the next
+	// call, which the API requires for tool use under thinking.
+	thinkIdx, thinkCur := -1, agent.ThinkingBlock{}
 
 	err = sse(ctx, resp.Body, func(data []byte) error {
 		var ev struct {
@@ -335,11 +451,13 @@ func (p Anthropic) Chat(ctx context.Context, system string, history []agent.Turn
 				Type string `json:"type"`
 				ID   string `json:"id"`
 				Name string `json:"name"`
+				Data string `json:"data"` // redacted_thinking carries its blob here
 			} `json:"content_block"`
 			Delta struct {
 				Type        string `json:"type"`
 				Text        string `json:"text"`
 				Thinking    string `json:"thinking"`
+				Signature   string `json:"signature"`
 				PartialJSON string `json:"partial_json"`
 			} `json:"delta"`
 			Message struct {
@@ -365,8 +483,18 @@ func (p Anthropic) Chat(ctx context.Context, system string, history []agent.Turn
 		case "message_delta":
 			reply.Usage.Output = ev.Usage.OutputTokens
 		case "content_block_start":
-			if ev.ContentBlock.Type == "tool_use" {
+			switch ev.ContentBlock.Type {
+			case "tool_use":
 				calls.upsert(ev.Index, ev.ContentBlock.ID, ev.ContentBlock.Name, "")
+			case "thinking":
+				thinkIdx, thinkCur = ev.Index, agent.ThinkingBlock{}
+			case "redacted_thinking":
+				reply.Thinking = append(reply.Thinking, agent.ThinkingBlock{RedactedData: ev.ContentBlock.Data})
+			}
+		case "content_block_stop":
+			if ev.Index == thinkIdx {
+				reply.Thinking = append(reply.Thinking, thinkCur)
+				thinkIdx = -1
 			}
 		case "content_block_delta":
 			switch ev.Delta.Type {
@@ -374,7 +502,10 @@ func (p Anthropic) Chat(ctx context.Context, system string, history []agent.Turn
 				text.WriteString(ev.Delta.Text)
 				onText(ev.Delta.Text)
 			case "thinking_delta":
+				thinkCur.Text += ev.Delta.Thinking
 				onThink(ev.Delta.Thinking)
+			case "signature_delta":
+				thinkCur.Signature += ev.Delta.Signature
 			case "input_json_delta":
 				calls.appendArgs(ev.Index, ev.Delta.PartialJSON)
 			}
@@ -400,6 +531,15 @@ func (p Anthropic) Chat(ctx context.Context, system string, history []agent.Turn
 
 type OpenAI struct {
 	BaseURL, Key, Model string
+	// MaxTokens caps one reply's output tokens. 0 (the default) sends no cap:
+	// OpenAI and most compatible servers pick their own, and capping by
+	// accident would bite models that budget large completions.
+	MaxTokens int
+	// ReasoningEffort passes a reasoning-effort hint ("low", "high", ...)
+	// through to servers that support one. Empty sends nothing. When set,
+	// MaxTokens (if any) travels as max_completion_tokens: reasoning models
+	// reject the classic max_tokens parameter.
+	ReasoningEffort string
 }
 
 func (p OpenAI) Chat(ctx context.Context, system string, history []agent.Turn, tools []agent.ToolDef, onText, onThink func(string)) (agent.Reply, error) {
@@ -461,6 +601,15 @@ func (p OpenAI) Chat(ctx context.Context, system string, history []agent.Turn, t
 	body := map[string]any{
 		"model": p.Model, "messages": msgs, "stream": true,
 		"stream_options": map[string]any{"include_usage": true},
+	}
+	switch {
+	case p.ReasoningEffort != "":
+		body["reasoning_effort"] = p.ReasoningEffort
+		if p.MaxTokens > 0 {
+			body["max_completion_tokens"] = p.MaxTokens // reasoning models reject max_tokens
+		}
+	case p.MaxTokens > 0:
+		body["max_tokens"] = p.MaxTokens
 	}
 	if len(toolsParam) > 0 {
 		body["tools"] = toolsParam

@@ -653,3 +653,47 @@ func TestVisionCapableDialOverrides(t *testing.T) {
 		}
 	}
 }
+
+// TestRunTurnKeepsCompletedWorkOnError: a turn that did tool work and then
+// hit an API error keeps the completed exchange in history (its side effects
+// are already on disk); only the unconsumed user message is rolled back when
+// the very first call fails.
+// Breaker: restore the unconditional r.history[:mark] in runTurn's error path
+// and the tool turn vanishes while the file it wrote still exists.
+func TestRunTurnKeepsCompletedWorkOnError(t *testing.T) {
+	p := &seqChat{fns: []func(context.Context) (agent.Reply, error){
+		func(context.Context) (agent.Reply, error) {
+			return agent.Reply{Calls: []agent.ToolCall{{ID: "w1", Name: "bash", Args: []byte(`{"command":"true"}`)}}}, nil
+		},
+		func(context.Context) (agent.Reply, error) { return agent.Reply{}, errors.New("HTTP 500: boom") },
+	}}
+	r := newTestRepl(t)
+	r.p = p
+	r.md = newMarkdown(func(string) {})
+	r.history = []agent.Turn{{Role: "user", Text: "hi"}, {Role: "assistant", Text: "hello"}}
+	mark := len(r.history)
+	_, ok := r.runTurn(context.Background(), "do work", nil, agent.Hooks{})
+	if ok {
+		t.Fatal("the turn must report failure")
+	}
+	if len(r.history) <= mark+1 {
+		t.Fatalf("completed work must stay in history, got %d turns", len(r.history)-mark)
+	}
+	if r.history[mark+1].Role != "assistant" || r.history[mark+2].Role != "tool" {
+		t.Fatalf("kept turns must be the assistant call and its result, got %+v", r.history[mark:])
+	}
+
+	// First call failing outright: nothing was consumed, the user turn rolls back.
+	p2 := &seqChat{fns: []func(context.Context) (agent.Reply, error){
+		func(context.Context) (agent.Reply, error) { return agent.Reply{}, errors.New("HTTP 500: boom") },
+	}}
+	r2 := newTestRepl(t)
+	r2.p = p2
+	r2.md = newMarkdown(func(string) {})
+	r2.history = []agent.Turn{{Role: "user", Text: "hi"}, {Role: "assistant", Text: "hello"}}
+	mark2 := len(r2.history)
+	r2.runTurn(context.Background(), "unlucky", nil, agent.Hooks{})
+	if len(r2.history) != mark2 {
+		t.Fatalf("a turn that never started must roll back its user message, got %d extra turns", len(r2.history)-mark2)
+	}
+}

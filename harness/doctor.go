@@ -79,7 +79,7 @@ func runDoctor() int {
 			failD("%s: %v", name, err)
 			continue
 		}
-		p, err := buildProvider(prof.Protocol, nurl, nmodel, key, prof.KeyEnv)
+		p, err := buildProvider(prof.Protocol, nurl, nmodel, key, prof.KeyEnv, prof.dials())
 		if err != nil {
 			failD("%s: %v (%s)", name, err, keySrc)
 			continue

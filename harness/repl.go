@@ -533,7 +533,7 @@ func (r *repl) applyProvider(name string, prof Profile, key string) bool {
 		emit("%s  %v%s\n\n", red, err, reset)
 		return false
 	}
-	np, err := buildProvider(proto, nurl, nmodel, key, prof.KeyEnv)
+	np, err := buildProvider(proto, nurl, nmodel, key, prof.KeyEnv, prof.dials())
 	if err != nil {
 		emit("%s  %v%s\n\n", red, err, reset)
 		return false
@@ -705,7 +705,7 @@ func (r *repl) providerAdd() {
 	resolveDefaults(proto, &durl, &dmodel)
 	var found []string
 	var foundCtx map[string]int
-	if tmpP, err := buildProvider(proto, durl, "discovery", secret, ""); err == nil {
+	if tmpP, err := buildProvider(proto, durl, "discovery", secret, "", brainDials{}); err == nil {
 		found, foundCtx = discoverModels(tmpP)
 	}
 	var nmodel string
@@ -944,7 +944,7 @@ func (r *repl) setCustomModel(model string) {
 // on the session and the provider (sticky), and retunes the window when the
 // endpoint published one for m.
 func (r *repl) switchModel(m string) {
-	np, err := buildProvider(r.protocol, r.url, m, r.key, r.keyEnv)
+	np, err := buildProvider(r.protocol, r.url, m, r.key, r.keyEnv, r.pcfg.Providers[r.current].dials())
 	if err != nil {
 		emit("%s  %v%s\n\n", red, err, reset)
 		return
@@ -1015,6 +1015,7 @@ func (r *repl) briefWriter() (agent.Provider, string) {
 	}
 	proto, url, key, keyEnv := r.protocol, r.url, r.key, r.keyEnv
 	model := tune.BriefModel
+	dials := r.pcfg.Providers[r.current].dials()
 	if tune.BriefProvider != "" {
 		pname, prof, err := r.pcfg.resolve(tune.BriefProvider)
 		if err != nil {
@@ -1022,6 +1023,7 @@ func (r *repl) briefWriter() (agent.Provider, string) {
 			return r.p, ""
 		}
 		proto, url, key, keyEnv = prof.Protocol, prof.URL, prof.Key, prof.KeyEnv
+		dials = prof.dials()
 		if key == "" {
 			key = r.creds[pname]
 		}
@@ -1033,7 +1035,7 @@ func (r *repl) briefWriter() (agent.Provider, string) {
 		emit("%s  brief writer unavailable (%v); the worker writes its own brief%s\n", dim, err, reset)
 		return r.p, ""
 	}
-	bp, err := buildProvider(proto, url, model, key, keyEnv)
+	bp, err := buildProvider(proto, url, model, key, keyEnv, dials)
 	if err != nil {
 		emit("%s  brief writer unavailable (%v); the worker writes its own brief%s\n", dim, err, reset)
 		return r.p, ""
@@ -1192,10 +1194,12 @@ func ask(c console, prompt, def string) string {
 // ---------------------------------------------------------------------------
 
 // runTurn executes one chat turn and returns the turns it produced (nil when
-// the turn failed). On any abnormal end (API error or a Ctrl-C cancellation)
-// the unconsumed user turn is rolled back, so the session can never
-// accumulate consecutive user messages, which the Anthropic protocol rejects
-// on the next call.
+// the turn failed). On an abnormal end (API error or a Ctrl-C cancellation)
+// history keeps any completed exchange: its tool results already changed
+// disk, so dropping them would leave the model believing its own edits never
+// happened. Only a failure before any assistant reply consumed nothing, and
+// just the unconsumed user message rolls back (consecutive user turns would
+// poison the next call).
 func (r *repl) runTurn(ctx context.Context, line string, tools []agent.Tool, hooks agent.Hooks) ([]agent.Turn, bool) {
 	mark := len(r.history)
 	// Images the user pasted into this message ride along on the user turn. Only
@@ -1213,9 +1217,15 @@ func (r *repl) runTurn(ctx context.Context, line string, tools []agent.Tool, hoo
 	r.md.flush() // emit the message's trailing partial line before the summary
 	emit("\n")
 	if err != nil {
-		r.history = r.history[:mark]
+		if len(r.history) <= mark+1 { // no assistant reply ever landed: nothing was consumed
+			r.history = r.history[:mark]
+		}
 		if isCanceled(err) {
-			emit("%s  turn cancelled; your message was not consumed%s\n", yellow, reset)
+			if len(r.history) > mark {
+				emit("%s  turn cancelled; completed work before the cancel is kept, the rest was not sent%s\n", yellow, reset)
+			} else {
+				emit("%s  turn cancelled; your message was not consumed%s\n", yellow, reset)
+			}
 		} else {
 			emit("%serror: %v%s\n", red, err, reset)
 			if hint := keyHint(err, r.current); hint != "" {

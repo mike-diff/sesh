@@ -28,6 +28,25 @@ bash can reach it, which is the documented trust boundary. Each mount here
 has its own short README or .example; the project lives at
 https://github.com/mike-diff/sesh
 
+## providers.json per-profile dials
+
+Beyond the wizard's basics, a profile accepts fields the adapters consume
+(state only what you change):
+
+    "context": 200000        // the model's context window; enables pressure
+                             // tracking and automatic handoff near the limit
+    "max_tokens": 16000      // output cap per reply. anthropic: replaces the
+                             // max_output_tokens tuning default; a 400 naming
+                             // the model's real cap self-heals to it. openai:
+                             // sesh sends a cap only when this is set
+    "thinking_budget": 10000 // anthropic extended thinking, per reply;
+                             // thinking bills as output and max_tokens is
+                             // raised to clear the budget. Default off
+    "reasoning_effort": "high" // openai-protocol reasoning hint, passed
+                             // through where the server supports one
+    "vision": true           // force image support on/off (default: name
+                             // heuristic; unknown models are text-only)
+
 ## Theme
 
 `theme.json` recolors the markdown sesh renders as it streams the model's

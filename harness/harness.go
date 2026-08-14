@@ -183,7 +183,7 @@ func Main() {
 	var p agent.Provider
 	var buildErr error
 	if buildErr = resolveDefaults(spec.protocol, &spec.url, &spec.model); buildErr == nil {
-		p, buildErr = buildProvider(spec.protocol, spec.url, spec.model, spec.key, spec.keyEnv)
+		p, buildErr = buildProvider(spec.protocol, spec.url, spec.model, spec.key, spec.keyEnv, spec.brainDials)
 	}
 	if p != nil {
 		sess.Provider = spec.name
@@ -279,6 +279,13 @@ func Main() {
 		out, spent, err := agent.Run(context.Background(), r.p, r.system, r.history, tools,
 			agent.Hooks{Gate: pg})
 		if err != nil {
+			// Completed work survives the failure in a tied session: its side
+			// effects are on disk and the next scripted -p run resumes from it.
+			if tied && len(out) > mark+1 {
+				r.history = out
+				r.sess.Turns = out
+				r.sess.save()
+			}
 			if hint := keyHint(err, spec.name); hint != "" {
 				fmt.Fprintf(os.Stderr, "%s\n", strings.TrimSpace(hint))
 			}

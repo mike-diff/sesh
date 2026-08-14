@@ -4,11 +4,13 @@
 package harness
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -184,6 +186,83 @@ func pidAlive(pid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
+// sessionMeta is the header a startup scan needs: none of the transcript.
+// Read without parsing the turns tail, so startup stays O(header bytes)
+// across every saved session instead of O(all transcripts ever written).
+// Only the fields the scans consume live here; anything else would be
+// unused weight.
+type sessionMeta struct {
+	ID      string    `json:"id"`
+	Cwd     string    `json:"cwd"`
+	Child   string    `json:"continued_by"`
+	Updated time.Time `json:"updated"`
+}
+
+// metaHeadBytes bounds the meta read. turns is the last key in the struct, so
+// it always sits just past the header; a pathological ledger that pushes it
+// beyond this window falls back to a full load.
+const metaHeadBytes = 64 << 10
+
+// loadSessionMeta reads a session's header without parsing the transcript:
+// everything up to the comma before the "turns" key, closed with }, is a
+// complete JSON object of the header fields. A cut that lands inside a string
+// (a title containing the literal "turns":) cannot parse, so it falls back
+// rather than mis-reading. ok is false when the head lacks the key or the cut
+// fails to parse; callers then fall back to loadSession.
+func loadSessionMeta(path string) (sessionMeta, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return sessionMeta{}, false
+	}
+	defer f.Close()
+	buf := make([]byte, metaHeadBytes)
+	n, _ := io.ReadFull(f, buf)
+	buf = buf[:n]
+
+	i := bytes.Index(buf, []byte(`"turns":`))
+	if i < 0 {
+		return sessionMeta{}, false
+	}
+	j := bytes.LastIndexByte(buf[:i], ',')
+	if j < 0 {
+		return sessionMeta{}, false
+	}
+	var m sessionMeta
+	if json.Unmarshal(append(append([]byte{}, buf[:j]...), '}'), &m) != nil {
+		return sessionMeta{}, false
+	}
+	if m.ID == "" {
+		return sessionMeta{}, false
+	}
+	return m, true
+}
+
+// allMetas lists every session's header, newest first: allSessions' cheap
+// twin. A file the meta reader cannot handle falls back to a full load; one
+// neither can handle is skipped, exactly as allSessions always skipped it.
+func allMetas() []sessionMeta {
+	entries, err := os.ReadDir(sessionsDir())
+	if err != nil {
+		return nil
+	}
+	var out []sessionMeta
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(sessionsDir(), e.Name())
+		if m, ok := loadSessionMeta(path); ok {
+			out = append(out, m)
+			continue
+		}
+		if s, err := loadSession(strings.TrimSuffix(e.Name(), ".json")); err == nil {
+			out = append(out, sessionMeta{ID: s.ID, Cwd: s.Cwd, Child: s.Child, Updated: s.Updated})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Updated.After(out[j].Updated) })
+	return out
+}
+
 // chainTip follows continued_by pointers to the live end of a handoff chain.
 // A sealed session must never accumulate new turns (its archived transcript
 // is what descendants' recall reads), so resuming one lands here instead.
@@ -230,16 +309,18 @@ func allSessions() []*Session {
 // live end of their chain is, and it sorts later anyway.
 // Sessions from elsewhere are reachable explicitly via -resume or -fork.
 func latestSession(cwd string) (*Session, error) {
-	sessions := allSessions()
-	if len(sessions) == 0 {
+	metas := allMetas()
+	if len(metas) == 0 {
 		return nil, fmt.Errorf("no sessions to continue in %s", sessionsDir())
 	}
-	for _, s := range sessions {
-		if s.Cwd == cwd && s.Child == "" {
-			return s, nil
+	for _, m := range metas {
+		if m.Cwd == cwd && m.Child == "" {
+			if s, err := loadSession(m.ID); err == nil {
+				return s, nil
+			}
 		}
 	}
-	return nil, fmt.Errorf("no sessions for this directory (%d elsewhere; sesh -list to see them, -resume <id> to pick one)", len(sessions))
+	return nil, fmt.Errorf("no sessions for this directory (%d elsewhere; sesh -list to see them, -resume <id> to pick one)", len(metas))
 }
 
 // lastBrain returns the most recent session whose brain a fresh session
@@ -247,14 +328,21 @@ func latestSession(cwd string) (*Session, error) {
 // Nil when there is no history at all (first run), which falls back to the
 // config default.
 func lastBrain(cwd string) *Session {
-	sessions := allSessions()
-	for _, s := range sessions {
-		if s.Cwd == cwd {
-			return s
+	metas := allMetas()
+	pick := func(m sessionMeta) *Session {
+		s, err := loadSession(m.ID)
+		if err != nil {
+			return nil // torn or gone: fall through to the next candidate
+		}
+		return s
+	}
+	for _, m := range metas {
+		if m.Cwd == cwd {
+			return pick(m)
 		}
 	}
-	if len(sessions) > 0 {
-		return sessions[0]
+	if len(metas) > 0 {
+		return pick(metas[0])
 	}
 	return nil
 }

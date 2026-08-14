@@ -14,3 +14,10 @@ jobs:
         run: go vet ./...
       - name: test
         run: go test ./...
+      # The end-to-end rig: the built binary, headless, against a scripted
+      # endpoint. Catches assembled-product regressions unit tests cannot
+      # (wire shape, gates, drive lifecycle, session persistence).
+      - name: e2e
+        env:
+          SESH_E2E: "1"
+        run: go test ./harness/ -run TestE2E -count=1 -v

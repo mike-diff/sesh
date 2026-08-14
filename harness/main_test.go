@@ -295,10 +295,11 @@ func TestCappedBuffer(t *testing.T) {
 
 // TestSearchCapAndSkips: past the cap, search suppresses match lines in favor
 // of true counts and narrowing guidance (silent first-N keeps are the design
-// the evidence killed), and the 1MB size guard still
-// filters oversized files. Breakers: restore the silent 50-line keep and the
-// suppression assertion fails; drop the size guard and big.txt joins the
-// counts.
+// the evidence killed), and the 1MB size guard skips oversized files BUT
+// names them, so a skip can never silently shrink the result set. Breakers:
+// restore the silent 50-line keep and the suppression assertion fails; drop
+// the size guard and big.txt joins the counts; drop the disclosure and the
+// big.txt mention vanishes.
 func TestSearchCapAndSkips(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	chtmp(t)
@@ -307,7 +308,8 @@ func TestSearchCapAndSkips(t *testing.T) {
 	for i := 0; i < 60; i++ {
 		os.WriteFile(string(rune('a'+i%26))+strings.Repeat("x", i/26)+".txt", []byte("needle here"), 0o644)
 	}
-	// a file over the 1MB guard must be skipped even though it matches
+	// a file over the 1MB guard must be skipped from the counts even though
+	// it matches, and named in the skip note
 	os.WriteFile("big.txt", append(make([]byte, 1<<20), []byte("needle here")...), 0o644)
 
 	out, isErr := runTool(t, "search", args(t, map[string]string{"pattern": "needle"}), nil, false)
@@ -320,7 +322,10 @@ func TestSearchCapAndSkips(t *testing.T) {
 	if strings.Contains(out, "needle here") {
 		t.Fatalf("over-cap output must suppress match lines:\n%s", out)
 	}
-	if strings.Contains(out, "big.txt") {
-		t.Fatal("oversized file should have been skipped")
+	if !strings.Contains(out, "big.txt") || !strings.Contains(out, "not searched") {
+		t.Fatalf("the oversize skip must be disclosed by name:\n%s", out)
+	}
+	if strings.Contains(out, "61 matches") {
+		t.Fatalf("oversized file must not join the counts:\n%s", out)
 	}
 }

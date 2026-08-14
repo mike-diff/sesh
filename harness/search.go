@@ -132,6 +132,11 @@ func doSearch(pattern string) (string, bool) {
 
 	var files []*fileMatches
 	totalMatches, shownLines := 0, 0
+	// Files over the size cap are skipped, never searched: they are named in
+	// the output instead of silently shrinking the result, because a skipped
+	// match the model does not know about is confidently wrong reporting.
+	var oversizeSkipped []string
+	oversizeCount := 0
 
 	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -156,7 +161,13 @@ func doSearch(pattern string) (string, bool) {
 			return nil
 		}
 		// Skip big files: keeps memory bounded and filters most binaries.
-		if info, err := d.Info(); err != nil || info.Size() > 1<<20 {
+		if info, err := d.Info(); err != nil {
+			return nil
+		} else if info.Size() > 1<<20 {
+			oversizeCount++
+			if len(oversizeSkipped) < 5 {
+				oversizeSkipped = append(oversizeSkipped, rel)
+			}
 			return nil
 		}
 		b, err := os.ReadFile(p)
@@ -189,8 +200,21 @@ func doSearch(pattern string) (string, bool) {
 		return nil
 	})
 
+	// The skip disclosure rides on every output shape, including no-matches:
+	// "no matches" is only honest when the model knows what was not searched.
+	oversizeNote := func() string {
+		if oversizeCount == 0 {
+			return ""
+		}
+		note := fmt.Sprintf("\n%d file(s) over 1MB not searched (read them directly to check): %s", oversizeCount, strings.Join(oversizeSkipped, ", "))
+		if oversizeCount > len(oversizeSkipped) {
+			note += fmt.Sprintf(" (+%d more)", oversizeCount-len(oversizeSkipped))
+		}
+		return note
+	}
+
 	if totalMatches == 0 {
-		return "no matches", false
+		return "no matches" + oversizeNote(), false
 	}
 
 	countStr := fmt.Sprintf("%d", totalMatches)
@@ -211,7 +235,7 @@ func doSearch(pattern string) (string, bool) {
 			}
 			fmt.Fprintf(&b, "  %4d  %s\n", fm.count, fm.rel)
 		}
-		return strings.TrimRight(b.String(), "\n"), false
+		return strings.TrimRight(b.String(), "\n") + oversizeNote(), false
 	}
 
 	fmt.Fprintf(&b, "%s matches in %d files\n", countStr, len(files))
@@ -221,5 +245,5 @@ func doSearch(pattern string) (string, bool) {
 			fmt.Fprintf(&b, "%s\n", l)
 		}
 	}
-	return strings.TrimRight(b.String(), "\n"), false
+	return strings.TrimRight(b.String(), "\n") + oversizeNote(), false
 }
