@@ -119,12 +119,17 @@ The core exposes one small surface, and the product fills it in:
   model call, and the latest turns verbatim (`continuity.go`). The boundary is
   silent because it is recoverable, not because the summary is trusted: prior
   links are archived in full and the `recall` tool searches the whole chain.
-  The retention rig (`rig_test.go`, opt-in via `SESH_RIG=1`) measures what
-  each boundary mechanism actually preserves; changes here must keep it green.
-  Pressure management is not optional: when a window is known, handoff is the
-  lifecycle. There is no off switch, because a session past its window is
-  silently truncating on some servers while the user reads a warning; the
-  tuning.json dials move the thresholds for anyone who wants them elsewhere.
+  This matters most where compaction is weakest: weaker or local models, very
+  long sessions, and any case where an in-place summary would silently drop
+  load-bearing detail. Strong frontier models compact well, and there handoff
+  is still correct, recoverable infrastructure rather than a quality cliff,
+  so the work is safe either way. The retention rig (`rig_test.go`, opt-in via
+  `SESH_RIG=1`) measures what each boundary mechanism actually preserves;
+  changes here must keep it green. Pressure management is not optional: when a
+  window is known, handoff is the lifecycle. There is no off switch, because a
+  session past its window is silently truncating on some servers while the
+  user reads a warning; the tuning.json dials move the thresholds for anyone
+  who wants them elsewhere.
 - **Autonomy by default; the dial is explicit.** Interactive tools run
   freely, mutation included: the human watching the transcript is the
   oversight, and ctrl-c is the gate. Prompting before every write was the

@@ -11,10 +11,20 @@ sesh was created with a few things in mind:
 
 - **A policy-free core.** The loop lives in `agent/` and owns no policy: it never prints, never reads input, never decides whether an action is allowed. Everything opinionated lives at the edge, where you can change it, and should, to make it your own.
 - **Minimal beats featureful.** Every line is a line someone has to understand, so we reach for the standard library before a dependency and for deletion before addition.
-- **Stop when you're done, not when the model context bloats.** A fresh-context judge reads your request and the transcript and decides whether the task is actually finished (see [the drive loop](#the-drive-loop)).
+- **Stop when you're done, not when the model stops.** A fresh-context judge reads your request and the transcript and decides whether the task is actually finished, so sesh keeps working past a single reply until the work is verified done (see [the drive loop](#the-drive-loop)).
 - **Autonomy by default, with explicit dials.** Tools run without per-call prompts; you watch the transcript and Ctrl-C is the brake. The safety dials are real and live in code, not in the prompt (see [Autonomy by default](#autonomy-by-default)).
 
 The reasoning behind each belief is in [AGENTS.md](AGENTS.md). sesh automatically appends a project's `AGENTS.md` or `CLAUDE.md` (from the directory you launch it in) to the system prompt, so this file is also how sesh steers itself in its own repo.
+
+## What makes sesh different
+
+Two things, both deliberate, that you do not get from a single-vendor coding agent:
+
+**The drive loop with a fresh-context judge.** Most agents stop the moment the model stops. sesh treats your request as a goal and keeps going: after any turn that used tools, a separate fresh-context call (never the worker) reads the request and the transcript and rules on evidence alone, `done` / `blocked` / not done. Its reason feeds the next iteration, so the loop closes instead of stalling. Plain conversation is never judged and never loops: chat stays chat. Hard limits bound it (`-max-iters`, a no-progress detector, `-max-tools`, Ctrl-C). See [the drive loop](#the-drive-loop).
+
+**Drop-in mods, no recompile.** Every customization is a file you drop into a mount point. No plugin runtime, no registration: sesh looks for well-known filenames and uses what it finds. Swap the system prompt, rule on every mutating call in code, add tools, attach MCP servers, retune the dials, all from `~/.sesh/` overlaid by a project's `.sesh/`. See [Extending with mods](#extending-with-mods).
+
+These sit on top of the things that are true of any small agent done this way: standard library only, one binary, a ~270-line policy-free core you can read in a sitting, and any OpenAI- or Anthropic-protocol endpoint as the brain.
 
 ## Install
 
@@ -119,6 +129,8 @@ What decides when to break the loop is a fresh-context judge. After any turn tha
 
   bounds: -max-iters · no-progress (stuck) · -max-tools · Ctrl-C
 ```
+
+The judge is never the worker: a separate fresh-context call weighs the transcript, so the verdict comes from evidence rather than the worker's own claim of success. That separation is what makes "stop when you're done" honest instead of a model rubber-stamping itself.
 
 ## Autonomy by default
 
