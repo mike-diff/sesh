@@ -183,7 +183,7 @@ func Main() {
 	var p agent.Provider
 	var buildErr error
 	if buildErr = resolveDefaults(spec.protocol, &spec.url, &spec.model); buildErr == nil {
-		p, buildErr = buildProvider(spec.protocol, spec.url, spec.model, spec.key, spec.keyEnv, spec.maxTokens)
+		p, buildErr = buildProvider(spec.protocol, spec.url, spec.model, spec.key, spec.keyEnv, spec.brainDials)
 	}
 	if p != nil {
 		sess.Provider = spec.name

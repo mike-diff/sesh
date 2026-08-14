@@ -39,6 +39,13 @@ type Profile struct {
 	// strict gateway that requires one, or to bound spend on a model whose
 	// own cap is smaller than the default.
 	MaxTokens int `json:"max_tokens,omitempty"`
+	// ThinkingBudget enables extended thinking on the anthropic protocol
+	// with this per-reply token budget (thinking bills as output; max_tokens
+	// is raised to clear it). 0, the default, sends no thinking parameter.
+	ThinkingBudget int `json:"thinking_budget,omitempty"`
+	// ReasoningEffort passes a hint like "low" or "high" to openai-protocol
+	// servers that support one. Empty sends nothing.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// Vision is the tri-state override for whether this profile's model can see
 	// images: nil leaves it to the model-name heuristic, true or false forces it.
 	// It is the escape hatch named in the paste-blocked guidance.
@@ -107,7 +114,19 @@ type providerSpec struct {
 	protocol, url, model string
 	key, keyEnv          string
 	ctxLimit             int
-	maxTokens            int // profile output cap; 0 = the protocol's own default
+	brainDials           // per-model output and reasoning dials
+}
+
+// brainDials are the per-profile knobs the adapters consume; a value's zero
+// means the protocol's own default.
+type brainDials struct {
+	maxTokens       int    // profile output cap; 0 = the protocol's own default
+	thinkingBudget  int    // anthropic extended-thinking budget; 0 = off
+	reasoningEffort string // openai reasoning-effort hint; "" = not sent
+}
+
+func (p Profile) dials() brainDials {
+	return brainDials{maxTokens: p.MaxTokens, thinkingBudget: p.ThinkingBudget, reasoningEffort: p.ReasoningEffort}
 }
 
 // selection carries the raw command-line choice into resolveSpec. explicit
@@ -143,7 +162,7 @@ func resolveSpec(sel selection, sess *Session, cfg ProvidersConfig, creds map[st
 			s.key = creds[name]
 		}
 		s.ctxLimit = prof.Context
-		s.maxTokens = prof.MaxTokens
+		s.brainDials = prof.dials()
 	} else if sel.explicit["provider"] {
 		return s, err
 	}

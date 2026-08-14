@@ -502,3 +502,133 @@ func TestOpenAIMaxTokensOnlyWhenSet(t *testing.T) {
 		t.Fatalf("configured max_tokens not sent: %v", got)
 	}
 }
+
+// thinkingStreamEvents is a full thinking reply: a thinking block with text
+// and signature, then the text answer.
+func thinkingStreamEvents() []string {
+	return []string{
+		`{"type":"message_start","message":{"usage":{"input_tokens":3}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"let me think"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-abc"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"text"}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"the answer"}}`,
+		`{"type":"content_block_stop","index":1}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}`,
+		`{"type":"message_stop"}`,
+	}
+}
+
+// TestAnthropicThinkingCaptured: with a thinking budget set, the request
+// carries the thinking parameter and a max_tokens that clears the budget, and
+// the streamed thinking block is captured with its signature so the next
+// request can pass it back (required for tool use under thinking).
+// Breakers: drop the thinking body key and the first half fails; send the
+// budget as max_tokens without margin and the margin assertion fails; stop
+// capturing thinking blocks and the second half fails.
+func TestAnthropicThinkingCaptured(t *testing.T) {
+	var body map[string]any
+	srv := sseServer(t, &body, &http.Header{}, thinkingStreamEvents()...)
+	defer srv.Close()
+	p := Anthropic{BaseURL: srv.URL, Model: "m-think", MaxTokens: 16000, ThinkingBudget: 10000}
+	var sawThink string
+	reply, err := p.Chat(context.Background(), "s", []agent.Turn{{Role: "user", Text: "x"}}, nil,
+		func(string) {}, func(s string) { sawThink += s })
+	if err != nil {
+		t.Fatal(err)
+	}
+	th, ok := body["thinking"].(map[string]any)
+	if !ok || th["type"] != "enabled" || th["budget_tokens"].(float64) != 10000 {
+		t.Fatalf("thinking budget must reach the wire: %v", body["thinking"])
+	}
+	if body["max_tokens"].(float64) <= 10000 {
+		t.Fatalf("max_tokens must clear the thinking budget: %v", body["max_tokens"])
+	}
+	if sawThink != "let me think" {
+		t.Fatalf("thinking deltas must stream for display, got %q", sawThink)
+	}
+	if len(reply.Thinking) != 1 ||
+		reply.Thinking[0].Text != "let me think" || reply.Thinking[0].Signature != "sig-abc" {
+		t.Fatalf("thinking block must be captured for the round-trip: %+v", reply.Thinking)
+	}
+}
+
+// TestAnthropicThinkingRoundTrip: the final assistant message must lead with
+// its thinking block when thinking is enabled (the API rejects tool-use
+// continuations otherwise).
+// Breaker: skip re-serializing thinking and the block disappears from the
+// wire body.
+func TestAnthropicThinkingRoundTrip(t *testing.T) {
+	var body map[string]any
+	srv := sseServer(t, &body, &http.Header{},
+		`{"type":"message_start","message":{"usage":{"input_tokens":3}}}`,
+		`{"type":"message_stop"}`)
+	defer srv.Close()
+	p := Anthropic{BaseURL: srv.URL, Model: "m-think", ThinkingBudget: 10000}
+	hist := []agent.Turn{
+		{Role: "user", Text: "q"},
+		{Role: "assistant", Thinking: []agent.ThinkingBlock{{Text: "ponder", Signature: "sig1"}},
+			Calls: []agent.ToolCall{{ID: "t1", Name: "read", Args: []byte(`{}`)}}},
+		{Role: "tool", Results: []agent.ToolResult{{ID: "t1", Content: "data"}}},
+	}
+	if _, err := p.Chat(context.Background(), "s", hist, nil, func(string) {}, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ := body["messages"].([]any)
+	last := msgs[len(msgs)-2].(map[string]any) // the tool result is the final message
+	if last["role"] != "assistant" {
+		t.Fatalf("expected the assistant turn, got %v", last["role"])
+	}
+	blocks := last["content"].([]any)
+	first := blocks[0].(map[string]any)
+	if first["type"] != "thinking" || first["signature"] != "sig1" || first["thinking"] != "ponder" {
+		t.Fatalf("assistant turn must lead with its thinking block, got %v", first)
+	}
+}
+
+// TestAnthropicNoThinkingWhenOff: without a budget the wire carries no
+// thinking key and history thinking blocks stay off the wire.
+// Breaker: always send thinking and the first assertion fires.
+func TestAnthropicNoThinkingWhenOff(t *testing.T) {
+	var body map[string]any
+	srv := sseServer(t, &body, &http.Header{},
+		`{"type":"message_start","message":{"usage":{"input_tokens":3}}}`,
+		`{"type":"message_stop"}`)
+	defer srv.Close()
+	p := Anthropic{BaseURL: srv.URL, Model: "m-plain"}
+	hist := []agent.Turn{
+		{Role: "user", Text: "q"},
+		{Role: "assistant", Thinking: []agent.ThinkingBlock{{Text: "old", Signature: "s0"}}, Text: "a"},
+		{Role: "user", Text: "again"},
+	}
+	if _, err := p.Chat(context.Background(), "s", hist, nil, func(string) {}, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["thinking"]; ok {
+		t.Fatal("no budget configured: the wire must carry no thinking key")
+	}
+	if s := fmt.Sprint(body["messages"]); strings.Contains(s, "thinking") {
+		t.Fatalf("history thinking blocks must not be sent when thinking is off: %s", s)
+	}
+}
+
+// TestOpenAIReasoningEffort: the profile's reasoning_effort passes through
+// when set, and is absent otherwise.
+// Breaker: always send it (or never) and one half fails.
+func TestOpenAIReasoningEffort(t *testing.T) {
+	send := func(effort string) map[string]any {
+		var body map[string]any
+		srv := sseServer(t, &body, &http.Header{}, `x`)
+		defer srv.Close()
+		p := OpenAI{BaseURL: srv.URL, Model: "m-oai", ReasoningEffort: effort}
+		p.Chat(context.Background(), "s", []agent.Turn{{Role: "user", Text: "x"}}, nil, func(string) {}, func(string) {})
+		return body
+	}
+	if _, ok := send("")["reasoning_effort"]; ok {
+		t.Fatal("unset effort must not be sent")
+	}
+	if got := send("high")["reasoning_effort"]; got != "high" {
+		t.Fatalf("effort must pass through, got %v", got)
+	}
+}

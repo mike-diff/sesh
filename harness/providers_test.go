@@ -160,3 +160,27 @@ func TestProfileJSON(t *testing.T) {
 		t.Fatalf("parsed profile: %+v", p)
 	}
 }
+
+// TestResolveSpecCarriesBrainDials: the per-profile output and reasoning
+// dials flow into the spec the provider is built from.
+// Breaker: drop the dials assignment in resolveSpec and every assertion here
+// reads zero.
+func TestResolveSpecCarriesBrainDials(t *testing.T) {
+	cfg := ProvidersConfig{Providers: map[string]Profile{
+		"thinker":  {Protocol: "anthropic", Model: "m", MaxTokens: 4096, ThinkingBudget: 5000},
+		"reasoner": {Protocol: "openai", Model: "o", ReasoningEffort: "high"},
+	}}
+	s, err := resolveSpec(selection{provider: "thinker", protocol: "anthropic",
+		explicit: map[string]bool{"provider": true}}, nil, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.maxTokens != 4096 || s.thinkingBudget != 5000 || s.reasoningEffort != "" {
+		t.Fatalf("anthropic dials lost: %+v", s.brainDials)
+	}
+	s, _ = resolveSpec(selection{provider: "reasoner", protocol: "openai",
+		explicit: map[string]bool{"provider": true}}, nil, cfg, nil)
+	if s.reasoningEffort != "high" || s.maxTokens != 0 {
+		t.Fatalf("openai dials lost: %+v", s.brainDials)
+	}
+}

@@ -38,6 +38,21 @@ type Turn struct {
 	Images  []Image      `json:"images,omitempty"`
 	Calls   []ToolCall   `json:"calls,omitempty"`
 	Results []ToolResult `json:"results,omitempty"`
+	// Thinking carries the reasoning blocks of an assistant turn when the
+	// provider runs with a thinking budget. Display is streaming-only, but
+	// Anthropic's protocol requires the final assistant message's thinking
+	// blocks (with signatures) to be passed back on the next call, so they
+	// persist with the history like every other part of the turn.
+	Thinking []ThinkingBlock `json:"thinking,omitempty"`
+}
+
+// ThinkingBlock is one reasoning block from a thinking model. Signature is
+// the provider's authenticity tag for the block; RedactedData is set when the
+// provider returned encrypted reasoning, passed back verbatim.
+type ThinkingBlock struct {
+	Text         string `json:"text,omitempty"`
+	Signature    string `json:"signature,omitempty"`
+	RedactedData string `json:"redacted_data,omitempty"`
 }
 
 // Image is one image carried on a user Turn. Hash and metadata persist with the
@@ -74,9 +89,10 @@ func (u Usage) Add(v Usage) Usage {
 }
 
 type Reply struct {
-	Text  string
-	Calls []ToolCall
-	Usage Usage
+	Text     string
+	Calls    []ToolCall
+	Thinking []ThinkingBlock
+	Usage    Usage
 }
 
 // Provider is one model call: streamed via the callbacks, the full reply
@@ -235,7 +251,7 @@ func Run(ctx context.Context, p Provider, system string, history []Turn, tools [
 		u := reply.Usage
 		u.LastInput = spent.LastInput
 		h.OnUsage(u) // per round-trip, so the caller can update totals mid-turn
-		history = append(history, Turn{Role: "assistant", Text: reply.Text, Calls: reply.Calls})
+		history = append(history, Turn{Role: "assistant", Text: reply.Text, Calls: reply.Calls, Thinking: reply.Thinking})
 
 		if len(reply.Calls) == 0 {
 			return history, spent, nil

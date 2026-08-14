@@ -44,7 +44,7 @@ func resolveDefaults(protocol string, url, model *string) error {
 // (local servers need no key). maxTokens is a profile-level output cap (0 =
 // none): on the anthropic protocol the tuning default fills it in, on openai
 // 0 means the wire carries no cap at all.
-func buildProvider(protocol, url, model, key, keyEnv string, maxTokens int) (agent.Provider, error) {
+func buildProvider(protocol, url, model, key, keyEnv string, dials brainDials) (agent.Provider, error) {
 	if key == "" && keyEnv != "" {
 		key = os.Getenv(keyEnv)
 	}
@@ -65,11 +65,11 @@ func buildProvider(protocol, url, model, key, keyEnv string, maxTokens int) (age
 		if key == "" && strings.Contains(url, "api.anthropic.com") {
 			return nil, fmt.Errorf("set %s", hint("ANTHROPIC_API_KEY"))
 		}
-		mt := maxTokens
+		mt := dials.maxTokens
 		if mt <= 0 {
 			mt = tune.MaxOutputTokens
 		}
-		return provider.Anthropic{BaseURL: url, Key: key, Model: model, MaxTokens: mt}, nil
+		return provider.Anthropic{BaseURL: url, Key: key, Model: model, MaxTokens: mt, ThinkingBudget: dials.thinkingBudget}, nil
 	default: // resolveDefaults already rejected anything but openai
 		if key == "" {
 			key = os.Getenv("OPENAI_API_KEY")
@@ -77,7 +77,7 @@ func buildProvider(protocol, url, model, key, keyEnv string, maxTokens int) (age
 		if key == "" && strings.Contains(url, "api.openai.com") {
 			return nil, fmt.Errorf("set %s", hint("OPENAI_API_KEY"))
 		}
-		return provider.OpenAI{BaseURL: url, Key: key, Model: model, MaxTokens: maxTokens}, nil
+		return provider.OpenAI{BaseURL: url, Key: key, Model: model, MaxTokens: dials.maxTokens, ReasoningEffort: dials.reasoningEffort}, nil
 	}
 }
 

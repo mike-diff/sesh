@@ -101,12 +101,15 @@ func newRig(t *testing.T, worker, judge []e2eStep) (*e2eMock, string) {
 		m.openaiReply(w, step)
 	})
 	mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
-		m.capture(r, "anthropic")
+		body := m.capture(r, "anthropic")
 		w.Header().Set("Content-Type", "text/event-stream")
 		step, ok := m.popWorker()
+		if isJudgeBody(body) {
+			step, ok = m.popJudge()
+		}
 		if !ok {
 			w.WriteHeader(500)
-			fmt.Fprintf(w, `{"error":{"message":"mock worker queue empty"}}`)
+			fmt.Fprintf(w, `{"error":{"message":"mock queue empty"}}`)
 			return
 		}
 		m.anthropicReply(w, step)
@@ -119,6 +122,7 @@ func newRig(t *testing.T, worker, judge []e2eStep) (*e2eMock, string) {
 		"providers": map[string]any{
 			"mock":  map[string]any{"protocol": "openai", "url": m.srv.URL + "/v1", "model": "mock-model", "context": 100000},
 			"amock": map[string]any{"protocol": "anthropic", "url": m.srv.URL, "model": "claude-3-5-sonnet", "context": 100000, "max_tokens": 4096},
+			"think": map[string]any{"protocol": "anthropic", "url": m.srv.URL, "model": "claude-sonnet-4", "context": 100000, "thinking_budget": 5000},
 		},
 	}
 	b, _ := json.MarshalIndent(providers, "", "  ")
@@ -132,6 +136,17 @@ func newRig(t *testing.T, worker, judge []e2eStep) (*e2eMock, string) {
 }
 
 func isJudgeBody(body map[string]any) bool {
+	// openai: a system message carries the judge prompt; anthropic: the
+	// system field is an array of text blocks.
+	if blocks, ok := body["system"].([]any); ok {
+		for _, b := range blocks {
+			if bm, ok := b.(map[string]any); ok {
+				if c, ok := bm["text"].(string); ok && strings.Contains(c, "judge request completion") {
+					return true
+				}
+			}
+		}
+	}
 	msgs, _ := body["messages"].([]any)
 	for _, mm := range msgs {
 		m, ok := mm.(map[string]any)
@@ -217,6 +232,21 @@ func (m *e2eMock) anthropicReply(w http.ResponseWriter, s e2eStep) {
 	case "mtoverflow":
 		w.WriteHeader(400)
 		fmt.Fprintf(w, `{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: 16000 > %d, which is the maximum allowed number of output tokens for claude-3-5-sonnet"}}`, s.Cap)
+	case "thinktool":
+		args := s.Args
+		if args == "" {
+			args = "{}"
+		}
+		m.sse(w, map[string]any{"type": "message_start", "message": map[string]any{"usage": map[string]any{"input_tokens": 40}}})
+		m.sse(w, map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "thinking"}})
+		m.sse(w, map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "thinking_delta", "thinking": "reasoning about the tool"}})
+		m.sse(w, map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "signature_delta", "signature": "sig-roundtrip"}})
+		m.sse(w, map[string]any{"type": "content_block_stop", "index": 0})
+		m.sse(w, map[string]any{"type": "content_block_start", "index": 1, "content_block": map[string]any{"type": "tool_use", "id": "toolu_1", "name": s.Name}})
+		m.sse(w, map[string]any{"type": "content_block_delta", "index": 1, "delta": map[string]any{"type": "input_json_delta", "partial_json": args}})
+		m.sse(w, map[string]any{"type": "content_block_stop", "index": 1})
+		m.sse(w, map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": "tool_use"}, "usage": map[string]any{"output_tokens": 5}})
+		m.sse(w, map[string]any{"type": "message_stop"})
 	case "tool":
 		args := s.Args
 		if args == "" {
@@ -576,6 +606,49 @@ func TestE2E(t *testing.T) {
 		}
 		if reqs[1]["max_tokens"].(float64) != 8192 {
 			t.Fatalf("retry must use the server-stated cap, got %v", reqs[1]["max_tokens"])
+		}
+	})
+
+	t.Run("ThinkingRoundTrip", func(t *testing.T) {
+		m, dir := newRig(t,
+			[]e2eStep{
+				{Kind: "thinktool", Name: "write", Args: `{"path":"t.txt","content":"hi"}`},
+				eText("wrote t.txt with thinking"),
+			},
+			[]e2eStep{verdictJSON("written")})
+		os.WriteFile(filepath.Join(dir, "seed.txt"), []byte("seed\n"), 0o644)
+		out, stderr := m.run(t, dir, "write t.txt", "-provider", "think")
+		if !strings.Contains(out, "wrote t.txt with thinking") {
+			t.Fatalf("thinking run did not finish: out=%q stderr=%s", out, stderr)
+		}
+		reqs := m.anthropicReqs(t)
+		if len(reqs) < 2 {
+			t.Fatalf("expected the tool call plus its follow-up, got %d requests", len(reqs))
+		}
+		first := reqs[0]
+		th, ok := first["thinking"].(map[string]any)
+		if !ok || th["budget_tokens"].(float64) != 5000 {
+			t.Fatalf("thinking budget must reach the wire: %v", first["thinking"])
+		}
+		if first["max_tokens"].(float64) <= 5000 {
+			t.Fatalf("max_tokens must clear the budget: %v", first["max_tokens"])
+		}
+		// The follow-up must lead the final assistant message with its
+		// thinking block: the API rejects tool-use continuations otherwise.
+		msgs, _ := reqs[1]["messages"].([]any)
+		var lastAsst map[string]any
+		for _, mm := range msgs {
+			if x, ok := mm.(map[string]any); ok && x["role"] == "assistant" {
+				lastAsst = x
+			}
+		}
+		blocks, _ := lastAsst["content"].([]any)
+		if len(blocks) == 0 {
+			t.Fatal("final assistant message has no content blocks")
+		}
+		b0, _ := blocks[0].(map[string]any)
+		if b0["type"] != "thinking" || b0["signature"] != "sig-roundtrip" {
+			t.Fatalf("final assistant message must lead with its thinking block, got %v", b0)
 		}
 	})
 

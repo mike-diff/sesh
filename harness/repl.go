@@ -533,7 +533,7 @@ func (r *repl) applyProvider(name string, prof Profile, key string) bool {
 		emit("%s  %v%s\n\n", red, err, reset)
 		return false
 	}
-	np, err := buildProvider(proto, nurl, nmodel, key, prof.KeyEnv, prof.MaxTokens)
+	np, err := buildProvider(proto, nurl, nmodel, key, prof.KeyEnv, prof.dials())
 	if err != nil {
 		emit("%s  %v%s\n\n", red, err, reset)
 		return false
@@ -705,7 +705,7 @@ func (r *repl) providerAdd() {
 	resolveDefaults(proto, &durl, &dmodel)
 	var found []string
 	var foundCtx map[string]int
-	if tmpP, err := buildProvider(proto, durl, "discovery", secret, "", 0); err == nil {
+	if tmpP, err := buildProvider(proto, durl, "discovery", secret, "", brainDials{}); err == nil {
 		found, foundCtx = discoverModels(tmpP)
 	}
 	var nmodel string
@@ -944,7 +944,7 @@ func (r *repl) setCustomModel(model string) {
 // on the session and the provider (sticky), and retunes the window when the
 // endpoint published one for m.
 func (r *repl) switchModel(m string) {
-	np, err := buildProvider(r.protocol, r.url, m, r.key, r.keyEnv, r.pcfg.Providers[r.current].MaxTokens)
+	np, err := buildProvider(r.protocol, r.url, m, r.key, r.keyEnv, r.pcfg.Providers[r.current].dials())
 	if err != nil {
 		emit("%s  %v%s\n\n", red, err, reset)
 		return
@@ -1015,7 +1015,7 @@ func (r *repl) briefWriter() (agent.Provider, string) {
 	}
 	proto, url, key, keyEnv := r.protocol, r.url, r.key, r.keyEnv
 	model := tune.BriefModel
-	maxTokens := r.pcfg.Providers[r.current].MaxTokens
+	dials := r.pcfg.Providers[r.current].dials()
 	if tune.BriefProvider != "" {
 		pname, prof, err := r.pcfg.resolve(tune.BriefProvider)
 		if err != nil {
@@ -1023,7 +1023,7 @@ func (r *repl) briefWriter() (agent.Provider, string) {
 			return r.p, ""
 		}
 		proto, url, key, keyEnv = prof.Protocol, prof.URL, prof.Key, prof.KeyEnv
-		maxTokens = prof.MaxTokens
+		dials = prof.dials()
 		if key == "" {
 			key = r.creds[pname]
 		}
@@ -1035,7 +1035,7 @@ func (r *repl) briefWriter() (agent.Provider, string) {
 		emit("%s  brief writer unavailable (%v); the worker writes its own brief%s\n", dim, err, reset)
 		return r.p, ""
 	}
-	bp, err := buildProvider(proto, url, model, key, keyEnv, maxTokens)
+	bp, err := buildProvider(proto, url, model, key, keyEnv, dials)
 	if err != nil {
 		emit("%s  brief writer unavailable (%v); the worker writes its own brief%s\n", dim, err, reset)
 		return r.p, ""
