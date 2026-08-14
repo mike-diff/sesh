@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/mike-diff/sesh/agent"
@@ -45,9 +46,15 @@ func builtinTools(unsafePaths bool, pm *procManager) []agent.Tool {
 		}
 	}
 	tools := []agent.Tool{
-		def("read", "Read a file and return its full text.",
-			obj([]string{"path"}, map[string]any{"path": str("Path to the file, relative to the working directory.")}),
-			func(_ context.Context, in toolInput) (string, bool) { return doRead(in.Path, unsafePaths) }),
+		def("read", "Read a file and return its text. A file larger than the tool's cap returns its head plus how to continue: page with offset (1-based line) and limit (line count).",
+			obj([]string{"path"}, map[string]any{
+				"path":   str("Path to the file, relative to the working directory."),
+				"offset": map[string]any{"type": "integer", "description": "First line to return, 1-based. Use with limit to page past a truncation."},
+				"limit":  map[string]any{"type": "integer", "description": "How many lines to return (default: from offset to as much as fits)."},
+			}),
+			func(_ context.Context, in toolInput) (string, bool) {
+				return doRead(in.Path, unsafePaths, in.Offset, in.Limit)
+			}),
 		def("search", "Search file contents for a substring, grouped by file. Smart-case: all-lowercase patterns match case-insensitively, any uppercase makes it exact. Respects .gitignore. Very broad queries return per-file match counts instead of lines: narrow the pattern and search again.",
 			obj([]string{"pattern"}, map[string]any{"pattern": str("The text to search for (substring; smart-case).")}),
 			func(_ context.Context, in toolInput) (string, bool) { return doSearch(in.Pattern) }),
@@ -95,13 +102,19 @@ func bashDesc(pm *procManager) string {
 
 type toolInput struct {
 	Path, Content, Old, New, Pattern, Command, Dir string
+	Offset, Limit                                  int
 }
 
-// sourceExts is what loc counts, mirroring the tool mod it graduated from
-// (loc began as a tool mod before becoming a built-in).
+// sourceExts is what loc counts: the mainstream code extensions a coding
+// agent gets asked about. Anything else is disclosed in the output (not
+// counted) rather than silently shrinking the total.
 var sourceExts = map[string]bool{
-	".go": true, ".py": true, ".ts": true, ".js": true,
-	".sh": true, ".rs": true, ".c": true, ".h": true,
+	".go": true, ".py": true, ".ts": true, ".js": true, ".tsx": true, ".jsx": true,
+	".sh": true, ".rs": true, ".c": true, ".h": true, ".cpp": true, ".cc": true,
+	".hpp": true, ".java": true, ".rb": true, ".php": true, ".cs": true, ".swift": true,
+	".kt": true, ".scala": true, ".m": true, ".mm": true, ".r": true, ".pl": true,
+	".lua": true, ".dart": true, ".vue": true, ".svelte": true, ".ex": true, ".exs": true,
+	".erl": true, ".hs": true, ".clj": true, ".zig": true, ".nim": true, ".sql": true,
 }
 
 // doLoc counts source lines under dir, grouped by extension. Read-only and
@@ -117,7 +130,8 @@ func doLoc(dir string, unsafe bool) (string, bool) {
 		return "no such directory: " + dir, true
 	}
 	total := 0
-	byExt := map[string]int{} // extension -> file count
+	byExt := map[string]int{}    // counted extension -> file count
+	otherExt := map[string]int{} // uncounted extension -> file count
 	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -130,6 +144,7 @@ func doLoc(dir string, unsafe bool) (string, bool) {
 		}
 		ext := filepath.Ext(path)
 		if !sourceExts[ext] {
+			otherExt[ext]++
 			return nil
 		}
 		b, err := os.ReadFile(path)
@@ -152,6 +167,20 @@ func doLoc(dir string, unsafe bool) (string, bool) {
 	fmt.Fprintf(&b, "total lines: %d\nfiles by extension:\n", total)
 	for _, e := range exts {
 		fmt.Fprintf(&b, "  %4d %s\n", byExt[e], strings.TrimPrefix(e, "."))
+	}
+	// Honesty over tidiness: whatever the count excludes is named, so "total
+	// lines" can never be mistaken for the whole tree.
+	if n := len(otherExt); n > 0 {
+		fmt.Fprintf(&b, "not counted: %d file(s) with other extensions (", n)
+		others := make([]string, 0, len(otherExt))
+		for e := range otherExt {
+			others = append(others, strings.TrimPrefix(e, ".")+":"+strconv.Itoa(otherExt[e]))
+		}
+		sort.Strings(others)
+		if len(others) > 5 {
+			others = append(others[:5], fmt.Sprintf("+%d more", len(others)-5))
+		}
+		b.WriteString(strings.Join(others, ", ") + ")")
 	}
 	return strings.TrimRight(b.String(), "\n"), false
 }
@@ -260,7 +289,22 @@ func confineRead(path string, unsafe bool) string {
 	return confine(path, unsafe)
 }
 
-func doRead(path string, unsafe bool) (string, bool) {
+// readCapChars bounds one read below the core's own result truncation, so a
+// truncated read ends with the actionable footer (total lines, next offset)
+// instead of a generic byte count.
+const readCapChars = 28000
+
+// lineCount counts lines the way a pager means them: a trailing newline does
+// not open a new line.
+func lineCount(s string) int {
+	return strings.Count(strings.TrimSuffix(s, "\n"), "\n") + 1
+}
+
+// doRead returns a file's text. Without offset/limit it returns the head up
+// to readCapChars; past that it appends how to page. With offset (1-based
+// line) it returns that window, limit lines or fewer, with a "lines X-Y of Z"
+// footer.
+func doRead(path string, unsafe bool, offset, limit int) (string, bool) {
 	if msg := confineRead(path, unsafe); msg != "" {
 		return msg, true
 	}
@@ -268,7 +312,44 @@ func doRead(path string, unsafe bool) (string, bool) {
 	if err != nil {
 		return err.Error(), true
 	}
-	return string(b), false
+	s := string(b)
+	if offset <= 0 && limit <= 0 {
+		if len(s) <= readCapChars {
+			return s, false
+		}
+		// Cut at a line boundary so the footer's line numbers are exact; a
+		// file with no newline anywhere in the cap region falls back to a byte
+		// cut (one enormous line).
+		head := s[:readCapChars]
+		if cut := strings.LastIndexByte(head, '\n'); cut > 0 {
+			head = head[:cut]
+		}
+		shown := lineCount(head)
+		return head + fmt.Sprintf("\n... [%d of %d lines shown; re-read with offset %d to continue]", shown, lineCount(s), shown+1), false
+	}
+	if offset < 1 {
+		return "read offset must be 1 or greater", true
+	}
+	lines := strings.Split(strings.TrimSuffix(s, "\n"), "\n")
+	total := len(lines)
+	if offset > total {
+		return fmt.Sprintf("offset %d is past the end of the file (%d lines)", offset, total), true
+	}
+	window := lines[offset-1:]
+	if limit > 0 && limit < len(window) {
+		window = window[:limit]
+	}
+	out := strings.Join(window, "\n")
+	footer := fmt.Sprintf("(lines %d-%d of %d)", offset, offset+len(window)-1, total)
+	if len(out) > readCapChars {
+		if cut := strings.LastIndexByte(out[:readCapChars], '\n'); cut > 0 {
+			out = out[:cut]
+		} else {
+			out = out[:readCapChars]
+		}
+		footer = fmt.Sprintf("(lines %d-%d of %d; window over the size cap, re-read with a smaller limit)", offset, offset+lineCount(out)-1, total)
+	}
+	return out + "\n" + footer, false
 }
 
 func doWrite(path, content string, unsafe bool) (string, bool) {

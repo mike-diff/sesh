@@ -30,13 +30,12 @@ import (
 // error when an action is denied. The mutex serializes prompts: parallel task
 // subagents may each want a bash run, and two prompts must not interleave.
 func gate(c console, ask bool) func(agent.ToolCall) error {
-	mod := findGateMod()
 	var mu sync.Mutex
 	return func(tc agent.ToolCall) error {
 		if !mutates(tc) {
 			return nil
 		}
-		if err := runGateMod(mod, tc); err != nil {
+		if err := runGateMod(tc); err != nil {
 			return err
 		}
 		if !ask {
@@ -82,7 +81,6 @@ func budgetGate(n int, inner func(agent.ToolCall) error) func(agent.ToolCall) er
 // must hold in unattended runs too (it is exactly where it matters most), and
 // it fails closed like everywhere else.
 func printGate(autoYes bool) func(agent.ToolCall) error {
-	mod := findGateMod()
 	return func(c agent.ToolCall) error {
 		if !mutates(c) {
 			return nil
@@ -90,7 +88,7 @@ func printGate(autoYes bool) func(agent.ToolCall) error {
 		if !autoYes {
 			return fmt.Errorf("print mode is read-only: %s is disabled; tell the user to rerun with -yes to allow changes", c.Name)
 		}
-		return runGateMod(mod, c)
+		return runGateMod(c)
 	}
 }
 
@@ -125,8 +123,11 @@ func findGateMod() string {
 // stdin, exit 0 allows, nonzero denies with the first stdout line as the
 // model-readable reason. A mod that breaks (cannot start, hangs past the
 // timeout) DENIES: someone who installed a boundary gets the locked failure
-// mode, never the open one.
-func runGateMod(mod string, tc agent.ToolCall) error {
+// mode, never the open one. The mod is re-resolved on every call (one stat):
+// a gate installed or fixed mid-session binds at the next mutation, which is
+// exactly when an unattended run needs it to.
+func runGateMod(tc agent.ToolCall) error {
+	mod := findGateMod()
 	if mod == "" {
 		return nil
 	}

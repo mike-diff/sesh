@@ -74,6 +74,7 @@
   //                             // the real cap sesh adopts it for the session,
   //                             // so legacy models self-heal. Per-profile:
   //                             // "max_tokens" in providers.json (openai too).
+  // "mcp_timeout_secs": 60,     // one MCP tool call's ceiling, seconds
   // "update_check": false,      // true: interactive startup checks GitHub for a
   //                             // newer build and nudges you to run /update
   // "input_max_rows": 6,        // rows the input editor grows to before it

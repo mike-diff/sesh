@@ -314,3 +314,29 @@ func TestMCPJoinsTheGate(t *testing.T) {
 		t.Fatal("mcp must join the gate policy like write/edit/bash")
 	}
 }
+
+// TestMCPTimeoutDial: the mcp_timeout_secs dial bounds a call (connect +
+// handshake included); a server that never answers fails at the dial, not at
+// the old fixed 60s.
+// Breaker: hardcode the old bashTimeout in runMCP and this takes a minute
+// instead of ~1s.
+func TestMCPTimeoutDial(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	chtmp(t)
+	old := tune.McpTimeoutSecs
+	tune.McpTimeoutSecs = 1
+	t.Cleanup(func() { tune.McpTimeoutSecs = old })
+
+	pool := newMCPPool(map[string]mcpServerConf{
+		"slow": {Command: "/usr/bin/sleep", Args: []string{"30"}},
+	})
+	start := time.Now()
+	out, isErr := runMCP(context.Background(), pool, []byte(`{"server":"slow","tool":"x"}`))
+	elapsed := time.Since(start)
+	if !isErr || !strings.Contains(out, "timed out") {
+		t.Fatalf("an unresponsive server must fail with a timeout error, got %q err=%v", out, isErr)
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("the dial must bound the wait, took %v", elapsed)
+	}
+}

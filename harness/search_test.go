@@ -143,3 +143,25 @@ func loadGitignoreFrom(t *testing.T, content string) []ignoreRule {
 	}
 	return loadGitignore(dir)
 }
+
+// TestSearchDisclosesOversizeSkips: files over the size cap are not searched,
+// so they must be named in the output; a silent skip would let the model
+// confidently report the wrong file set.
+// Breaker: drop the footer and big.log vanishes from the output entirely.
+func TestSearchDisclosesOversizeSkips(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	chtmp(t)
+	os.WriteFile("small.go", []byte("needle here\n"), 0o644)
+	os.WriteFile("big.log", []byte(strings.Repeat("needle filler\n", 90000)), 0o644)
+
+	out, isErr := doSearch("needle")
+	if isErr {
+		t.Fatalf("search errored: %s", out)
+	}
+	if !strings.Contains(out, "small.go") {
+		t.Fatalf("the searchable hit must be reported, got:\n%s", out)
+	}
+	if !strings.Contains(out, "big.log") || !strings.Contains(out, "not searched") {
+		t.Fatalf("the oversize skip must be disclosed, got:\n%s", out)
+	}
+}

@@ -96,6 +96,11 @@ type Tuning struct {
 	// 16000. Not applied to the openai protocol, where sesh sends no cap
 	// unless the profile sets one (max_tokens).
 	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+	// McpTimeoutSecs is one MCP tool call's ceiling (connect, handshake, and
+	// the call itself), in seconds. Default 60. A slow server (big queries,
+	// code execution) needs a higher dial, and an unresponsive one must not
+	// hang a turn forever.
+	McpTimeoutSecs int `json:"mcp_timeout_secs,omitempty"`
 	// UpdateCheck, when on, has interactive startup ask the latest release
 	// whether a newer build exists and, if so, print a one-line nudge to run
 	// /update. Default off: it is a network call to GitHub on every launch, so
@@ -120,6 +125,7 @@ func defaultTuning() Tuning {
 		SkillManifestMax:  50,
 		McpManifestMax:    100,
 		MaxOutputTokens:   16000,
+		McpTimeoutSecs:    60,
 		ProcPromoteSecs:   60,
 		MaxProcs:          10,
 		ProcLogTail:       200,
@@ -215,6 +221,7 @@ func overlayTuning(t *Tuning, got Tuning) {
 	set(&t.SkillManifestMax, got.SkillManifestMax)
 	set(&t.McpManifestMax, got.McpManifestMax)
 	set(&t.MaxOutputTokens, got.MaxOutputTokens)
+	set(&t.McpTimeoutSecs, got.McpTimeoutSecs)
 	set(&t.ProcPromoteSecs, got.ProcPromoteSecs)
 	set(&t.MaxProcs, got.MaxProcs)
 	set(&t.ProcLogTail, got.ProcLogTail)
