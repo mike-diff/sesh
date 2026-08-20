@@ -343,10 +343,10 @@ func TestBeginInputPreservesDraftAcrossTurnEnd(t *testing.T) {
 
 // TestBeginInputDropsMaskedDraftForOrdinaryPrompt: a non-empty buffer left from
 // a masked prompt must never carry into an ordinary one, so a secret cannot
-// leak across prompt types. The carry-over branch is gated on !mask, so a
-// non-empty masked buffer is cleared when the next (non-masked) prompt opens.
-// Breaker: drop the !mask guard on the carry-over branch and the secret text
-// survives into the ordinary prompt.
+// leak across prompt types. The carry-over branch requires the PRIOR prompt to
+// be unmasked, so a non-empty masked buffer is cleared when the next prompt
+// opens. Breaker: drop the !t.mask guard on the carry-over branch and the
+// secret text survives into the ordinary prompt.
 func TestBeginInputDropsMaskedDraftForOrdinaryPrompt(t *testing.T) {
 	f, err := os.CreateTemp(t.TempDir(), "tui-out")
 	if err != nil {
@@ -359,6 +359,27 @@ func TestBeginInputDropsMaskedDraftForOrdinaryPrompt(t *testing.T) {
 	tc.beginInput("-> ", false)
 	if len(tc.buf) != 0 {
 		t.Fatalf("a masked draft must not carry into an ordinary prompt: buf = %q", string(tc.buf))
+	}
+}
+
+// TestBeginInputDropsDraftForSecretPrompt: the other direction of the same
+// boundary. An ordinary draft must not carry INTO a masked prompt, where it
+// would render as dots and be submitted as the secret on the next Enter. No
+// current path reaches a secret prompt with a draft pending (every route to one
+// goes through a submitted line, which clears the buffer), so this guards a
+// boundary rather than fixing a live bug: the carry rule is about crossing the
+// secret line at all, not about which side it started on. Breaker: relax the
+// guard to `!t.mask && len(t.buf) > 0` and the draft lands in the key field.
+func TestBeginInputDropsDraftForSecretPrompt(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "tui-out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tc := &tuiConsole{out: f, cols: 80, buf: []rune("my draft text"), pos: 13}
+	tc.beginInput("api key: ", true)
+	if len(tc.buf) != 0 {
+		t.Fatalf("a draft must not carry into a masked prompt: buf = %q", string(tc.buf))
 	}
 }
 
