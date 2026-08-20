@@ -4,6 +4,13 @@
 # editor/tool droppings
 *.tmp
 
+# Unattended-run artifacts: TASK.md is the prompt a dispatch run was given and
+# PR_BODY.md is the body it authored. Both are inputs to a run, never source.
+# The workflow deletes them before committing; ignoring them means a missed
+# delete cannot land them in the repo anyway.
+/TASK.md
+/PR_BODY.md
+
 # project-local sesh mods and config are personal, never committed
 .sesh/
 
