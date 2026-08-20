@@ -97,8 +97,10 @@ FILES AND MODS (project .sesh/ overrides global ~/.sesh/)
                                seed_ledger_entries, task_depth, stuck_after,
                                recall_links, diff_lines, proc_promote_secs,
                                max_procs, proc_log_tail, update_check,
-                               input_max_rows, brief_provider, brief_model
-                               (state only what you change)
+                               input_max_rows, brief_provider, brief_model,
+                               result_max_chars, result_head_pct,
+                               result_spill_off, result_keep_days,
+                               transcript_result (state only what you change)
   tools/<name>                 executables that become agent tools (global
                                mount only): --schema describes, args JSON on
                                stdin, stdout is the result; mutating ones
@@ -108,6 +110,9 @@ FILES AND MODS (project .sesh/ overrides global ~/.sesh/)
                                line is the reason); broken mod fails closed
   statusline                   executable; JSON on stdin, first line shown
   sessions/, chains/           transcripts and chain ledgers (plain JSON/JSONL)
+  out/                         full text of tool output too large for the
+                               context window, keyed by conversation; the
+                               shaped result points here and read can page it
   run/                         background-process logs and crash records,
                                cleared when a session exits
 

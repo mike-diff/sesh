@@ -109,6 +109,34 @@ type Tuning struct {
 	// InputMaxRows is how many rows the interactive input editor grows to before
 	// it scrolls vertically with the cursor kept in view. Default 6.
 	InputMaxRows int `json:"input_max_rows,omitempty"`
+	// ResultMaxChars bounds one tool result, head and tail kept around an
+	// elided middle whose full text spills to a file the model can read.
+	// Default 28000: under the core's own hard ceiling, so the shaped result
+	// (which carries the actionable pointer) is what reaches the window rather
+	// than a generic byte count. Applies to the tools whose output size the
+	// harness does not otherwise control: bash, the engines, and tool mods.
+	ResultMaxChars int `json:"result_max_chars,omitempty"`
+	// ResultHeadPct is how much of that budget goes to the head; the rest is
+	// the tail. Default 25: a failing command's diagnostic can sit anywhere in
+	// the output but its verdict is always on the last lines, so the tail earns
+	// the larger share.
+	ResultHeadPct int `json:"result_head_pct,omitempty"`
+	// ResultSpillOff drops the on-disk copy of an over-budget result (the
+	// shaped head and tail still reach the model, and still report the elided
+	// line range, just without a path to recover it). Default off, so output is
+	// recoverable. Inverted so the zero value keeps the default, like every dial.
+	ResultSpillOff bool `json:"result_spill_off,omitempty"`
+	// ResultKeepDays is how long a conversation's spilled output outlives its
+	// last write. Default 7. Collecting early only costs a pointer in a resumed
+	// transcript the ability to resolve, which the model reads as an ordinary
+	// missing file.
+	ResultKeepDays int `json:"result_keep_days,omitempty"`
+	// TranscriptResult is the per-result budget in the transcript the judge and
+	// the brief writer read, head and tail kept around an elided middle.
+	// Default 300. Head-only elision here is what let a failing test run reach
+	// the judge as a wall of PASS lines, so both ends are kept for the same
+	// reason the tool result keeps both.
+	TranscriptResult int `json:"transcript_result,omitempty"`
 }
 
 func defaultTuning() Tuning {
@@ -130,6 +158,10 @@ func defaultTuning() Tuning {
 		MaxProcs:          10,
 		ProcLogTail:       200,
 		InputMaxRows:      6,
+		ResultMaxChars:    28000,
+		ResultHeadPct:     25,
+		ResultKeepDays:    7,
+		TranscriptResult:  300,
 	}
 }
 
@@ -226,6 +258,10 @@ func overlayTuning(t *Tuning, got Tuning) {
 	set(&t.MaxProcs, got.MaxProcs)
 	set(&t.ProcLogTail, got.ProcLogTail)
 	set(&t.InputMaxRows, got.InputMaxRows)
+	set(&t.ResultMaxChars, got.ResultMaxChars)
+	set(&t.ResultHeadPct, got.ResultHeadPct)
+	set(&t.ResultKeepDays, got.ResultKeepDays)
+	set(&t.TranscriptResult, got.TranscriptResult)
 	// DiffLines accepts -1 (disable), so its overlay applies on any nonzero.
 	if got.DiffLines != 0 {
 		t.DiffLines = got.DiffLines
@@ -236,6 +272,9 @@ func overlayTuning(t *Tuning, got Tuning) {
 	}
 	if got.ProcSpillOff {
 		t.ProcSpillOff = true
+	}
+	if got.ResultSpillOff {
+		t.ResultSpillOff = true
 	}
 	if got.UpdateCheck {
 		t.UpdateCheck = true

@@ -218,6 +218,15 @@ func runDoctor() int {
 		pass("%s: writable, %d sessions", sessionsDir(), len(allSessions()))
 	}
 
+	// Spilled output is the one mount point that grows on its own, so doctor
+	// reports what is there and confirms the sweep has something to do.
+	if n, bytes := outputUsage(); n > 0 {
+		pass("%s: %d conversation(s), %s (swept after %d idle days)",
+			outputsDir(), n, humanBytes(bytes), tune.ResultKeepDays)
+	} else {
+		pass("%s: empty", outputsDir())
+	}
+
 	if ok {
 		fmt.Println("\nall checks passed")
 		return 0

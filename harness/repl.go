@@ -1061,7 +1061,7 @@ func (r *repl) handoff() bool {
 	} else {
 		emit("%s  writing handoff brief...%s\n", dim, reset)
 	}
-	brief, entry, used, err := writeBrief(context.Background(), bp, renderTranscript(r.history, 300))
+	brief, entry, used, err := writeBrief(context.Background(), bp, renderTranscript(r.history, tune.TranscriptResult))
 	if err != nil {
 		emit("%s  handoff brief failed: %v%s\n", red, err, reset)
 		return false

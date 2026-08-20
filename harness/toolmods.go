@@ -84,11 +84,11 @@ func loadToolMods(taken map[string]bool) ([]agent.Tool, []string) {
 				params = p
 			}
 		}
-		tools = append(tools, agent.Tool{
+		tools = append(tools, shaped(agent.Tool{
 			Def:      agent.ToolDef{Name: name, Description: schema.Description, Schema: params},
 			Run:      runToolMod(path),
 			Parallel: parallel,
-		})
+		}))
 		taken[name] = true
 	}
 	return tools, notes

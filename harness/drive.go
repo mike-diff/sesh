@@ -215,7 +215,7 @@ func drive(r *repl, cfg driveConfig, firstTurns []agent.Turn) int {
 			// Escape pauses the drive during the judge phase too (not just during a
 			// streamed worker iteration).
 			jctx, jdone := turnCtx()
-			transcript := renderTranscript(iterTurns, 300)
+			transcript := renderTranscript(iterTurns, tune.TranscriptResult)
 			var jUsed agent.Usage
 			var jerr error
 			v, jUsed, jerr = judgeGoal(jctx, r.p, cfg.request, transcript)

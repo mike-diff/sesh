@@ -281,6 +281,10 @@ func TestBashOutputCap(t *testing.T) {
 	}
 }
 
+// TestCappedBuffer: the buffer keeps the TAIL, evicting from the head like the
+// process supervisor's ring. A command that outgrows the cap is almost always a
+// build or test run, and its verdict is on the last lines. Breaker: keep the
+// head instead and "efgh" no longer ends the buffer.
 func TestCappedBuffer(t *testing.T) {
 	c := &cappedBuffer{max: 5}
 	for _, chunk := range []string{"ab", "cd", "efgh"} {
@@ -288,7 +292,7 @@ func TestCappedBuffer(t *testing.T) {
 			t.Fatalf("write must report full consumption: n=%d err=%v", n, err)
 		}
 	}
-	if string(c.buf) != "abcde" || c.dropped != 3 {
+	if string(c.buf) != "defgh" || c.dropped != 3 {
 		t.Fatalf("buf=%q dropped=%d", c.buf, c.dropped)
 	}
 }

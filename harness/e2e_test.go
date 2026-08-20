@@ -667,4 +667,93 @@ func TestE2E(t *testing.T) {
 			t.Fatal("a denied write must not touch disk")
 		}
 	})
+	// The defect this feature exists for, end to end through the real binary: a
+	// failing test run whose output exceeds the window budget must still reach
+	// the model with its verdict, and the elided middle must be recoverable with
+	// the read tool at the offset the pointer names.
+	t.Run("OversizedOutputKeepsVerdictAndSpills", func(t *testing.T) {
+		m, dir := newRig(t,
+			[]e2eStep{
+				eTool("bash", `{"command":"sh gen.sh"}`),
+				eText("the suite failed"),
+			},
+			[]e2eStep{verdictJSON("reported the failure")})
+		// A generator whose output brackets the budget: PASS noise around a
+		// diagnostic in the middle, and the verdict on the final line.
+		gen := "#!/bin/sh\n" +
+			"i=0; while [ $i -lt 900 ]; do echo \"=== RUN   TestAlpha$i\"; echo \"--- PASS: TestAlpha$i (0.00s)\"; i=$((i+1)); done\n" +
+			"echo '    a_test.go:403: boom: nil map write at pkg/store.go:88'\n" +
+			"i=0; while [ $i -lt 900 ]; do echo \"=== RUN   TestBeta$i\"; echo \"--- PASS: TestBeta$i (0.00s)\"; i=$((i+1)); done\n" +
+			"echo 'FAIL\tsigprobe/pkg\t0.013s'\n"
+		os.WriteFile(filepath.Join(dir, "gen.sh"), []byte(gen), 0o755)
+
+		m.run(t, dir, "run the suite and tell me whether it passed")
+
+		res := m.lastToolResult(t, 2)
+		// The judge rules done on the transcript, so the verdict must survive the
+		// per-result elision too: a head-only cut fed it a wall of PASS lines
+		// from a run that failed.
+		judged := false
+		m.mu.Lock()
+		for _, r := range m.reqs {
+			if r.Class != "judge" {
+				continue
+			}
+			msgs, _ := r.Body["messages"].([]any)
+			for _, mm := range msgs {
+				x, ok := mm.(map[string]any)
+				if !ok {
+					continue
+				}
+				if c, _ := x["content"].(string); strings.Contains(c, "FAIL\tsigprobe/pkg") {
+					judged = true
+				}
+			}
+		}
+		m.mu.Unlock()
+		if !judged {
+			t.Error("the judge must see the failing verdict in the transcript")
+		}
+		if len(res) > tune.ResultMaxChars {
+			t.Fatalf("result reached the model unbounded: %d bytes", len(res))
+		}
+		if !strings.Contains(res, "FAIL\tsigprobe/pkg") {
+			t.Fatalf("the verdict on the last line must survive:\n%s", tailOf(res, 400))
+		}
+		if !strings.Contains(res, "TestAlpha0") {
+			t.Fatalf("the head must survive:\n%s", headOf(res, 400))
+		}
+
+		// The pointer must name a real file, and it must hold what was elided.
+		i := strings.Index(res, "full output: ")
+		if i < 0 {
+			t.Fatalf("no spill pointer in the shaped result:\n%s", res[max(0, len(res)-400):])
+		}
+		path := res[i+len("full output: "):]
+		path = path[:strings.Index(path, " ")]
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("spilled output unreadable at the path the model was given: %v", err)
+		}
+		if !strings.Contains(string(body), "boom: nil map write") {
+			t.Fatal("the spilled file must hold the elided diagnostic")
+		}
+		if !strings.Contains(string(body), "TestBeta450") {
+			t.Fatal("the spilled file must hold the full output, not just the shaped ends")
+		}
+	})
+}
+
+func headOf(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+func tailOf(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
 }

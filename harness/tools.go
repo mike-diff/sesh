@@ -67,14 +67,14 @@ func builtinTools(unsafePaths bool, pm *procManager) []agent.Tool {
 			}),
 			func(_ context.Context, in toolInput) (string, bool) { return doWrite(in.Path, in.Content, unsafePaths) }),
 		hardenedEditTool(unsafePaths),
-		def("bash", bashDesc(pm),
+		shaped(def("bash", bashDesc(pm),
 			obj([]string{"command"}, map[string]any{"command": str("The command to run.")}),
 			func(ctx context.Context, in toolInput) (string, bool) {
 				if pm != nil {
 					return pm.doBash(ctx, in.Command)
 				}
 				return boundedBash(ctx, in.Command)
-			}),
+			})),
 	}
 	// proc is a built-in (it claims its name ahead of tool mods), but only when
 	// a supervisor is in play: the top-level session, not subagents or the rig.
@@ -259,8 +259,11 @@ func confine(path string, unsafe bool) string {
 }
 
 // readableSeshData carves the archive out of the ~/.sesh refusal:
-// sessions and chain ledgers are exactly the files context gets offloaded to,
-// so the agent (and its subagents) must always be able to find them again.
+// sessions, chain ledgers, and spilled tool output are exactly the files
+// context gets offloaded to, so the agent (and its subagents) must always be
+// able to find them again. Spilled output belongs here for the same reason the
+// transcripts do: the shaped result hands the model a path, and a pointer the
+// read tool refuses is worse than no pointer at all.
 // The key and credentials stay refused; mutation stays refused everywhere
 // under ~/.sesh (write/edit/bash use confine, not confineRead).
 func readableSeshData(path string) bool {
@@ -268,7 +271,7 @@ func readableSeshData(path string) bool {
 	if err != nil {
 		return false
 	}
-	for _, dir := range []string{sessionsDir(), chainsDir()} {
+	for _, dir := range []string{sessionsDir(), chainsDir(), outputsDir()} {
 		d, err := filepath.Abs(dir)
 		if err != nil {
 			continue
@@ -408,7 +411,10 @@ func doWrite(path, content string, unsafe bool) (string, bool) {
 const maxBashOutput = 1 << 20
 
 // cappedBuffer keeps at most max bytes and counts what it had to drop. It
-// never errors, so the command runs to completion (or timeout) regardless.
+// keeps the TAIL, evicting from the head as the ring in the process supervisor
+// does: a command that outgrows the cap is almost always a build or test run,
+// whose verdict is on its last lines. It never errors, so the command runs to
+// completion (or timeout) regardless.
 type cappedBuffer struct {
 	buf     []byte
 	max     int
@@ -416,16 +422,11 @@ type cappedBuffer struct {
 }
 
 func (c *cappedBuffer) Write(p []byte) (int, error) {
-	if room := c.max - len(c.buf); room > 0 {
-		if len(p) <= room {
-			c.buf = append(c.buf, p...)
-			return len(p), nil
-		}
-		c.buf = append(c.buf, p[:room]...)
-		c.dropped += len(p) - room
-		return len(p), nil
+	c.buf = append(c.buf, p...)
+	if over := len(c.buf) - c.max; over > 0 {
+		c.buf = append([]byte(nil), c.buf[over:]...)
+		c.dropped += over
 	}
-	c.dropped += len(p)
 	return len(p), nil
 }
 
@@ -442,7 +443,7 @@ func boundedBash(ctx context.Context, command string) (string, bool) {
 	err := cmd.Run()
 	s := string(out.buf)
 	if out.dropped > 0 {
-		s += fmt.Sprintf("\n... [output capped: %d more bytes dropped]", out.dropped)
+		s = fmt.Sprintf("... [output capped: %d earlier bytes dropped]\n", out.dropped) + s
 	}
 	if err != nil {
 		return strings.TrimSpace(s + "\n" + err.Error()), true

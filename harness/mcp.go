@@ -622,8 +622,9 @@ func runMCP(ctx context.Context, pool *mcpPool, raw json.RawMessage) (string, bo
 
 // renderMCPResult flattens an MCP content array to the one string a sesh
 // tool returns: text blocks verbatim, other block types as markers, isError
-// surfacing as a tool error the model can act on. Oversize output is
-// truncated loudly, the same cap as bash.
+// surfacing as a tool error the model can act on. Bounding the size is the
+// shaper's job at assembly, which keeps both ends and spills the rest, so
+// there is no second cut here to lose the tail before it gets there.
 func renderMCPResult(res json.RawMessage) (string, bool) {
 	var r struct {
 		Content []struct {
@@ -646,9 +647,6 @@ func renderMCPResult(res json.RawMessage) (string, bool) {
 	out := strings.TrimSpace(strings.Join(parts, "\n"))
 	if out == "" {
 		out = "(no output)"
-	}
-	if len(out) > maxBashOutput {
-		out = out[:maxBashOutput] + "\n[output truncated at 1MB]"
 	}
 	return out, r.IsError
 }
