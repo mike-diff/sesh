@@ -770,9 +770,23 @@ func (t *tuiConsole) SetTitle(s string) {
 // footer itself persists between inputs.
 func (t *tuiConsole) beginInput(prompt string, mask bool) {
 	t.mu.Lock()
-	t.prompt, t.buf, t.pos, t.mask = prompt, nil, 0, mask
-	t.snippets = nil
-	t.images = nil
+	// A turn can end while the user is mid-typing a steering message. Carry
+	// that draft into the next prompt instead of discarding it: endInput and
+	// the steer/stop paths already clear the buffer on submit, so a non-empty
+	// one here uniquely identifies the carry-over. The buffer's snippet and
+	// image tokens index into the slices, so they carry too.
+	//
+	// A draft never crosses a secret boundary in either direction: not out of
+	// a masked prompt, where it would leak the secret into plain view, and not
+	// into one, where it would sit in the field rendered as dots and be
+	// submitted as the key on the next Enter.
+	if !t.mask && !mask && len(t.buf) > 0 {
+		t.prompt, t.mask = prompt, mask
+	} else {
+		t.prompt, t.buf, t.pos, t.mask = prompt, nil, 0, mask
+		t.snippets = nil
+		t.images = nil
+	}
 	t.histIdx = len(t.hist)
 	t.draft = nil
 	t.winTop = 0
