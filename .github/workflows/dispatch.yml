@@ -97,10 +97,10 @@ jobs:
           echo "assembled .sesh/:"; find .sesh -type f | sort
 
       - name: Install Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.22"
-          cache: true
+          cache: false # no dependencies, so no go.sum to key a module cache on
 
       - name: Install sesh (checksum-verified, via the repo's own installer)
         # install.sh downloads the rolling release, verifies its SHA-256
