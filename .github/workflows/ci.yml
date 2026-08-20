@@ -8,6 +8,10 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.22"
+          # Nothing to cache: sesh has no dependencies, so there is no go.sum
+          # for the module cache to key on. Left on, every run attempts and
+          # fails a restore, and the warning trains you to skim annotations.
+          cache: false
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - name: vet

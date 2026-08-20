@@ -12,6 +12,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.22"
+          cache: false # no dependencies, so no go.sum to key a module cache on
       - name: build
         run: |
           mkdir -p dist
