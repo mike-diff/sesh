@@ -195,7 +195,7 @@ The core exposes one extension surface (a `Hooks` struct plus tools-as-values) a
 ## Development
 
 ```sh
-gofmt -l . && go vet ./... && go test ./...
+gofmt -l . && go vet ./... && go test -race ./...
 ```
 
 CI enforces all three. Keep the core pure: if a change makes `agent/` import a provider, read input, or print, it is in the wrong package.

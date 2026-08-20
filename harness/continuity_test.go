@@ -56,10 +56,19 @@ func TestRenderTranscript(t *testing.T) {
 		{Role: "assistant", Text: "done"},
 	}
 	got := renderTranscript(h, 100)
-	for _, want := range []string{"USER: fix the bug", "ASSISTANT ran read", "TOOL RESULT: " + strings.Repeat("z", 100) + "...", "ASSISTANT: done"} {
+	for _, want := range []string{"USER: fix the bug", "ASSISTANT ran read", "ASSISTANT: done"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("transcript missing %q:\n%s", want, got)
 		}
+	}
+	// A tool result is elided from the MIDDLE: the head shows what the output
+	// was, the tail shows how it ended. Keeping only the head is what let a
+	// failing command reach the judge looking like a successful one.
+	if !strings.Contains(got, "TOOL RESULT: "+strings.Repeat("z", 30)) {
+		t.Fatalf("elided result lost its head:\n%s", got)
+	}
+	if !strings.Contains(got, "second line") {
+		t.Fatalf("elided result lost its tail:\n%s", got)
 	}
 	if strings.Contains(got, strings.Repeat("z", 101)) {
 		t.Fatal("tool results must be elided to the stub")

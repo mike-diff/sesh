@@ -20,7 +20,7 @@ func engineTools() ([]agent.Tool, []string, string) {
 	skill, n, ok := skillTool()
 	notes = append(notes, n...)
 	if ok {
-		tools = append(tools, skill)
+		tools = append(tools, shaped(skill))
 		if !tune.SkillNoteOff {
 			sysNote = "\n\n<skills>\nSkills are installed. Before starting a task, check the skill tool's manifest: when a line matches the task, load that skill first and follow its instructions.\n</skills>"
 		}
@@ -28,7 +28,7 @@ func engineTools() ([]agent.Tool, []string, string) {
 	mcp, n, ok := mcpTool()
 	notes = append(notes, n...)
 	if ok {
-		tools = append(tools, mcp)
+		tools = append(tools, shaped(mcp))
 	}
 	return tools, notes, sysNote
 }

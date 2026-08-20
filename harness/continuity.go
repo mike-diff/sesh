@@ -83,11 +83,7 @@ func renderTranscript(turns []agent.Turn, maxResult int) string {
 			b.WriteByte('\n')
 		case "tool":
 			for _, res := range t.Results {
-				out := res.Content
-				if len(out) > maxResult {
-					out = out[:maxResult] + "..."
-				}
-				fmt.Fprintf(&b, "TOOL RESULT: %s\n", strings.ReplaceAll(out, "\n", " · "))
+				fmt.Fprintf(&b, "TOOL RESULT: %s\n", strings.ReplaceAll(elideText(res.Content, maxResult), "\n", " · "))
 			}
 			b.WriteByte('\n')
 		}
@@ -98,6 +94,26 @@ func renderTranscript(turns []agent.Turn, maxResult int) string {
 		s = s[:head] + "\n[... middle of the transcript omitted ...]\n" + s[len(s)-tail:]
 	}
 	return s
+}
+
+// elideText bounds one tool result inside the transcript, keeping its head AND
+// its tail around a marker, the same shape diff.go's elide gives a large diff
+// and the whole-transcript cut below gives a long transcript. It matters most
+// here: the judge rules done on this text, and a head-only cut of a failing
+// test run reads as an unbroken wall of PASS lines, which is worse than seeing
+// nothing at all. The head/tail split mirrors the transcript cut, so one ratio
+// governs both levels.
+func elideText(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	const marker = " ... "
+	if max <= len(marker)+2 { // too small to keep both ends meaningfully
+		return s[:max]
+	}
+	budget := max - len(marker)
+	head := budget / 3
+	return s[:head] + marker + s[len(s)-(budget-head):]
 }
 
 // imageNote renders a one-line, byte-free summary of a user turn's images for

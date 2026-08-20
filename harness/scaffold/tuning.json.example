@@ -62,6 +62,18 @@
   // "proc_log_tail": 200,       // default lines a `proc logs` read returns
   // "proc_spill_off": false,    // true keeps logs in memory only (no run/ file)
 
+  // --- Tool output too large for the window ---
+  // An over-budget result keeps its head AND its tail around an elided middle,
+  // and the full text spills to ~/.sesh/out/<conversation>/ so the model can
+  // read what was elided. Both ends matter: a failing command's diagnostic can
+  // sit anywhere in the output, but its verdict is always on the last lines.
+  // "result_max_chars": 28000,  // budget for one shaped tool result
+  // "result_head_pct": 25,      // share of that budget given to the head
+  // "result_spill_off": false,  // true keeps the shaped result but writes no file
+  // "result_keep_days": 7,      // how long spilled output outlives its last write
+  // "transcript_result": 300,   // per-result budget in the transcript the judge
+  //                             // and the brief writer read (also head + tail)
+
   // --- Other dials (full reference: ~/.sesh/README.md and -help) ---
   // "task_depth": 3,            // subagent nesting cap
   // "stuck_after": 3,           // driven iterations w/o a mutation before "stuck"

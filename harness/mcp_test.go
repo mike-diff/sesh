@@ -129,6 +129,9 @@ func mcpCall(t *testing.T, tool string, args string) (string, bool) {
 	if !ok {
 		t.Fatal("mcp tool did not activate")
 	}
+	// shaped() is what engineTools applies at assembly, so bounding the result
+	// is exercised here the way the model actually meets it.
+	tl = shaped(tl)
 	raw := json.RawMessage(fmt.Sprintf(`{"server":"gauntlet","tool":%q,"args":%s}`, tool, args))
 	return tl.Run(context.Background(), raw)
 }
@@ -273,15 +276,15 @@ func TestMCPManifestCacheFeedsNextSession(t *testing.T) {
 	}
 }
 
-// Breaker: return server output unbounded.
+// Breaker: return server output unbounded, or bound it without saying so.
 func TestMCPBigOutputTruncatedLoudly(t *testing.T) {
 	mcpHome(t, map[string]mcpServerConf{"gauntlet": gauntletConf(nil)})
 	out, _ := mcpCall(t, "big", `{}`)
-	if len(out) > maxBashOutput+100 {
-		t.Fatalf("output not capped: %d bytes", len(out))
+	if len(out) > tune.ResultMaxChars {
+		t.Fatalf("output not bounded: %d bytes", len(out))
 	}
-	if !strings.Contains(out, "[output truncated") {
-		t.Fatal("truncation must be loud, not silent")
+	if !strings.Contains(out, "elided") {
+		t.Fatalf("bounding must be loud, not silent:\n%s", out[max(0, len(out)-300):])
 	}
 }
 

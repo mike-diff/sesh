@@ -16,8 +16,11 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - name: vet
         run: go vet ./...
+      # -race, not bare go test: parallel tool calls, concurrent subagents, the
+      # process supervisor, and the TUI's signal handlers all share state, so a
+      # data race here is a lost keystroke or a hang, not a theoretical finding.
       - name: test
-        run: go test ./...
+        run: go test -race ./...
       # The end-to-end rig: the built binary, headless, against a scripted
       # endpoint. Catches assembled-product regressions unit tests cannot
       # (wire shape, gates, drive lifecycle, session persistence).

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -193,7 +194,11 @@ func Main() {
 	sweepDeadProcs(sess.ID) // reap processes a previously-crashed sesh left behind
 	pm := newProcManager(sess.ID)
 	os.Setenv("SESH_SESSION", sess.ID) // tool/gate/statusline mods can find this session's run dir
-	go gcBlobs()                       // sweep orphaned image blobs off the hot path; best-effort, never blocks startup
+	// Spilled tool output is keyed by the chain root, so it survives every
+	// handoff without rewriting the pointers already in the transcript.
+	spill = newOutStore(outputDir(sess))
+	go gcBlobs()                          // sweep orphaned image blobs off the hot path; best-effort, never blocks startup
+	go gcOutput(filepath.Base(spill.dir)) // same for spilled output of conversations long finished
 	tools := builtinTools(*unsafePaths, pm)
 	// The engines (skill, mcp) join only when their user-space content exists:
 	// an empty mount costs zero tokens. They are built-ins, so they claim

@@ -205,7 +205,10 @@ write results carry the diff they applied.
 ## Working in this repo
 
 - Verify before claiming done: `go build ./...`, `go vet ./...`, and
-  `go test ./...` must all pass. After changing a tool, exercise it with `bash`.
+  `go test -race ./...` must all pass. The race detector is part of the bar
+  because concurrency is part of the design: parallel tool calls, concurrent
+  subagents reporting usage, the process supervisor, and the TUI's signal
+  handlers all share state. After changing a tool, exercise it with `bash`.
 - **Tests earn their keep by failing.** Passing is not the bar; agents
   reliably write tests that pass. Before keeping any test, name the one-line
   code change that would make it fail. Cannot name one: it proves nothing,
