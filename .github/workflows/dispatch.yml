@@ -219,8 +219,11 @@ jobs:
           cp "$BODY_FILE" "$PR_BODY_COPY"
           BODY_FILE="$PR_BODY_COPY"
 
-          # Strip the artifact from the working tree before committing.
-          rm -f PR_BODY.md
+          # Strip both agent artifacts from the working tree before committing.
+          # TASK.md is the prompt this run was given and PR_BODY.md describes the
+          # change; both are inputs to the run, not source changes, so neither
+          # belongs in the repo. git add -A below would otherwise sweep them in.
+          rm -f PR_BODY.md TASK.md
           git add -A
           if git diff --cached --quiet; then
             echo "no source changes produced by agent"
