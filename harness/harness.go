@@ -67,6 +67,7 @@ func Main() {
 	autoYes := flag.Bool("yes", false, "allow mutation in print mode; interactively, silences -ask")
 	ask := flag.Bool("ask", false, "prompt for approval before each write/edit/bash call")
 	unsafePaths := flag.Bool("unsafe-paths", false, "allow file tools to touch paths outside the working directory")
+	jsonOut := flag.Bool("json", false, "with -p: emit one JSON envelope (reply, outcome, usage, tool calls) on stdout; failures arrive as JSON too, so pipes stay parseable")
 	printMode := flag.String("p", "", "print mode: run one prompt, print the final reply, exit (read-only unless -yes)")
 	maxTools := flag.Int("max-tools", 0, "cap tool calls per iteration, subagents included (0 = unlimited)")
 	maxIters := flag.Int("max-iters", 25, "stop driving a request after this many iterations (1 = single-turn, no persistence)")
@@ -93,6 +94,11 @@ func Main() {
 	if *list {
 		printSessions()
 		return
+	}
+	if *jsonOut && *printMode == "" {
+		fmt.Fprintln(os.Stderr, "-json applies to print mode; pass a prompt with -p")
+		flag.Usage()
+		os.Exit(2)
 	}
 	if *doctor {
 		os.Exit(runDoctor())
@@ -233,10 +239,16 @@ func Main() {
 	// Read-only by default: no one is watching, so mutation needs explicit -yes.
 	// A run tied to a session gets the same context management as interactive
 	// (preflight, pressure handoff): scripted -p -continue loops are exactly
-	// the sessions that otherwise grow forever. Management notices go to
-	// stderr so piped stdout stays the reply alone.
 	if *printMode != "" {
 		if p == nil {
+			if *jsonOut {
+				e := printEnvelope{ExitCode: 1, Outcome: "error"}
+				e.Error = "no usable provider configured"
+				if buildErr != nil {
+					e.Error = buildErr.Error()
+				}
+				emitPrintJSON(e, 1)
+			}
 			fail(buildErr)
 		}
 		tied := *resume != "" || *fork != "" || *cont
@@ -258,8 +270,12 @@ func Main() {
 		}
 		var mutMu sync.Mutex
 		mutations := 0
+		toolCalls := 0
 		raw := printGate(*autoYes)
 		counted := func(c agent.ToolCall) error {
+			mutMu.Lock()
+			toolCalls++
+			mutMu.Unlock()
 			err := raw(c)
 			if err == nil && mutates(c) {
 				mutMu.Lock()
@@ -276,6 +292,11 @@ func Main() {
 				recallTool(sessOf))
 		}
 		if r.preflight(*printMode) {
+			if *jsonOut {
+				e := printEnvelope{ExitCode: 1, Outcome: "error", Session: r.sess.ID,
+					Error: "preflight refused: the message cannot fit the context window"}
+				emitPrintJSON(e, 1)
+			}
 			os.Exit(1) // the message can never fit; nothing was sent
 		}
 		mark := len(r.history)
@@ -294,8 +315,14 @@ func Main() {
 			if hint := keyHint(err, spec.name); hint != "" {
 				fmt.Fprintf(os.Stderr, "%s\n", strings.TrimSpace(hint))
 			}
+			if *jsonOut {
+				e := printEnvelope{ExitCode: 1, Outcome: "error", Session: r.sess.ID,
+					Provider: spec.name, Model: spec.model, Error: err.Error()}
+				emitPrintJSON(e, 1)
+			}
 			fail(err)
 		}
+		r.account(spent) // the first turn is real spend too; drive iterations call this themselves
 		r.history = out
 		if spent.LastInput > 0 {
 			r.ctxTokens = spent.LastInput
@@ -320,6 +347,26 @@ func Main() {
 			// drive iterations save as they go; untied one-shots must not
 			// leave session litter behind.
 			os.Remove(r.sess.path())
+		}
+		if *jsonOut {
+			e := printEnvelope{
+				Reply: lastText(r.history), ExitCode: 0, Outcome: outcomeName(code),
+				Provider: spec.name, Model: spec.model, Session: r.sess.ID,
+			}
+			r.acctMu.Lock()
+			e.Iterations, e.ToolCalls = r.turns, toolCalls
+			e.Usage.Input, e.Usage.Output, e.Usage.CacheRead = r.totIn, r.totOut, r.totCache
+			r.acctMu.Unlock()
+			e.Mutations = mutations
+			if code == driveStuck || code == driveMaxIters || code == driveInterrupted {
+				e.ExitCode = code
+			}
+			if e.Outcome != "done" && e.Outcome != "blocked" && e.Error == "" {
+				e.Error = "run ended before the judge ruled done: " + e.Outcome
+			}
+			pm.reapAll()
+			releaseLock(r.sess.ID)
+			emitPrintJSON(e, e.ExitCode)
 		}
 		if final := lastText(r.history); final != "" {
 			fmt.Println(final) // the run's final reply, not replayed history

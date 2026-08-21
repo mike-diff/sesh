@@ -741,6 +741,7 @@ func TestE2E(t *testing.T) {
 		// per-result elision too: a head-only cut fed it a wall of PASS lines
 		// from a run that failed.
 		judged := false
+
 		m.mu.Lock()
 		for _, r := range m.reqs {
 			if r.Class != "judge" {
@@ -789,6 +790,54 @@ func TestE2E(t *testing.T) {
 			t.Fatal("the spilled file must hold the full output, not just the shaped ends")
 		}
 	})
+	// -json is a contract for scripts: one parseable object on stdout in
+	// every outcome. Breakers: drop the -json flag and the first scenario's
+	// parse fails (bare reply); route errors to stderr only and the failure
+	// scenario finds no JSON at all.
+	t.Run("JSONModeEmitsEnvelope", func(t *testing.T) {
+		m, dir := newRig(t,
+			[]e2eStep{eText("all done here")},
+			[]e2eStep{verdictJSON("verified")})
+		out, _ := m.run(t, dir, "say the thing", "-json")
+		var e struct {
+			Reply    string `json:"reply"`
+			Outcome  string `json:"outcome"`
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+			Error    string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &e); err != nil {
+			t.Fatalf("stdout must be exactly one JSON object, got: %q", out)
+		}
+		if e.Reply != "all done here" || e.Outcome != "done" || e.Error != "" {
+			t.Fatalf("envelope fields: reply=%q outcome=%q error=%q", e.Reply, e.Outcome, e.Error)
+		}
+		if e.Provider != "mock" || e.Model != "mock-model" {
+			t.Fatalf("envelope must name the serving brain: %q/%q", e.Provider, e.Model)
+		}
+	})
+
+	t.Run("JSONModeFailureIsStillJSON", func(t *testing.T) {
+		m, dir := newRig(t,
+			[]e2eStep{{Kind: "error", Status: 400, Msg: "mock injected failure"}},
+			nil)
+		out, _ := m.run(t, dir, "anything", "-json")
+		var e struct {
+			Reply   string `json:"reply"`
+			Outcome string `json:"outcome"`
+			Error   string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &e); err != nil {
+			t.Fatalf("a failed run must still emit JSON on stdout, got: %q", out)
+		}
+		if e.Error == "" || e.Outcome != "error" {
+			t.Fatalf("failure envelope: outcome=%q error=%q", e.Outcome, e.Error)
+		}
+		if e.Reply != "" {
+			t.Fatalf("a failed run has no reply: %q", e.Reply)
+		}
+	})
+
 }
 
 func headOf(s string, n int) string {

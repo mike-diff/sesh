@@ -18,6 +18,9 @@ MODES
   sesh                      interactive REPL (footer TUI on a terminal, plain on pipes)
   sesh -p "request"         print mode: work to completion, final reply on stdout,
                                progress on stderr. Read-only unless -yes.
+  sesh -p "request" -json   print mode, machine-readable: one JSON envelope
+                               (reply, outcome, usage, tool calls) on stdout;
+                               failures arrive as JSON too, never stderr-only
   sesh -doctor              check providers, keys, endpoints, context truncation,
                                statusline, sessions; exit nonzero on failure
   sesh -list                list saved sessions ([sealed -> id] marks handed-off links)
