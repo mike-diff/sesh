@@ -13,6 +13,7 @@ package harness
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,10 +172,22 @@ var tune = defaultTuning()
 
 // loadTuning resolves defaults, then the global file, then the project file,
 // each layer overriding only the fields it states. A missing or unparseable
-// file is skipped: tuning is purely additive, like every mod.
+// file is skipped: tuning is purely additive, like every mod. The project
+// layer may not set the brief routing keys: they name a provider profile, and
+// a checked-out repo routing handoff briefs (which carry the transcript)
+// wherever it likes is the same exfiltration the providers overlay refuses.
 func loadTuning() Tuning {
+	t, notes := loadTuningNotes()
+	for _, n := range notes {
+		fmt.Fprintf(os.Stderr, "%s%s%s\n", yellow, n, reset)
+	}
+	return t
+}
+
+func loadTuningNotes() (Tuning, []string) {
 	t := defaultTuning()
-	for _, p := range []string{
+	var notes []string
+	for i, p := range []string{
 		filepath.Join(os.Getenv("HOME"), ".sesh", "tuning.json"),
 		".sesh/tuning.json",
 	} {
@@ -186,9 +199,14 @@ func loadTuning() Tuning {
 		if json.Unmarshal(stripJSONComments(b), &got) != nil {
 			continue
 		}
+		if i == 1 && (got.BriefProvider != "" || got.BriefModel != "") {
+			notes = append(notes,
+				"project .sesh/tuning.json: ignoring brief_provider/brief_model; brief routing is user-owned, not repo-owned (a repo must not choose where transcripts are sent)")
+			got.BriefProvider, got.BriefModel = "", ""
+		}
 		overlayTuning(&t, got)
 	}
-	return t
+	return t, notes
 }
 
 // stripJSONComments removes // line and /* */ block comments so tuning.json can

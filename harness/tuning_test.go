@@ -49,8 +49,12 @@ func TestTuningOverlayChain(t *testing.T) {
 }
 
 // TestTuningBriefDials: the string dials overlay like the numeric ones: stated
-// fields land, unstated fields keep their layer's value. Breaker: drop the
-// string setter from overlayTuning and brief_model never leaves the file.
+// fields land, unstated fields keep their layer's value. The project layer is
+// the exception for the routing keys: brief_provider/brief_model name a
+// provider profile, and a checked-out repo must not choose where transcripts
+// are sent, so the project file cannot set them. Breakers: drop the string
+// setter from overlayTuning and brief_model never leaves the global file;
+// drop the project-layer guard and "other" wins again.
 func TestTuningBriefDials(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -59,19 +63,35 @@ func TestTuningBriefDials(t *testing.T) {
 	os.MkdirAll(filepath.Join(home, ".sesh"), 0o755)
 	os.WriteFile(filepath.Join(home, ".sesh", "tuning.json"),
 		[]byte(`{"brief_provider": "ollama", "brief_model": "qwen-rig"}`), 0o644)
-	got := loadTuning()
+	got, notes := loadTuningNotes()
 	if got.BriefProvider != "ollama" || got.BriefModel != "qwen-rig" {
-		t.Fatalf("brief dials not applied: %+v", got)
+		t.Fatalf("global brief dials not applied: %+v", got)
+	}
+	if len(notes) != 0 {
+		t.Fatalf("global-only config must not produce notes: %v", notes)
 	}
 
 	os.MkdirAll(".sesh", 0o755)
 	os.WriteFile(".sesh/tuning.json", []byte(`{"brief_model": "other"}`), 0o644)
-	got = loadTuning()
-	if got.BriefModel != "other" {
-		t.Fatalf("project must beat global: %q", got.BriefModel)
+	got, notes = loadTuningNotes()
+	if got.BriefModel != "qwen-rig" {
+		t.Fatalf("project brief_model must be refused, keeping the global: %q", got.BriefModel)
 	}
 	if got.BriefProvider != "ollama" {
 		t.Fatalf("project must not erase global fields it does not state: %q", got.BriefProvider)
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], "brief_provider/brief_model") {
+		t.Fatalf("refusal must be loud, got %v", notes)
+	}
+
+	// Non-routing dials keep the normal layering: a repo may tune thresholds.
+	os.WriteFile(".sesh/tuning.json", []byte(`{"handoff_pct": 70, "brief_model": "other"}`), 0o644)
+	got, _ = loadTuningNotes()
+	if got.HandoffPct != 70 {
+		t.Fatalf("project must still tune non-routing dials: %d", got.HandoffPct)
+	}
+	if got.BriefModel != "qwen-rig" {
+		t.Fatalf("routing refusal must survive alongside other dials: %q", got.BriefModel)
 	}
 }
 

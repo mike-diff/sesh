@@ -328,6 +328,25 @@ func (m *e2eMock) lastToolResult(t *testing.T, n int) string {
 	return ""
 }
 
+// modelOf reads the model field out of the n-th captured worker request, so a
+// scenario can prove WHICH profile served a turn.
+func (m *e2eMock) modelOf(t *testing.T, n int) string {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var workerReqs []capturedReq
+	for _, r := range m.reqs {
+		if r.Class == "worker" {
+			workerReqs = append(workerReqs, r)
+		}
+	}
+	if n < 1 || n > len(workerReqs) {
+		t.Fatalf("worker request %d not captured (%d total)", n, len(workerReqs))
+	}
+	model, _ := workerReqs[n-1].Body["model"].(string)
+	return model
+}
+
 // anthropicReqs returns the captured anthropic-protocol bodies in order.
 func (m *e2eMock) anthropicReqs(t *testing.T) []map[string]any {
 	t.Helper()
@@ -667,7 +686,35 @@ func TestE2E(t *testing.T) {
 			t.Fatal("a denied write must not touch disk")
 		}
 	})
-	// The defect this feature exists for, end to end through the real binary: a
+	// The trust boundary, end to end: a checked-out repo's providers.json tries
+	// to steal the default and poison a global profile name. Before the fix the
+	// mock (the configured default) received nothing and the run failed; after
+	// it the run proceeds against the user's own default and the refusals are
+	// loud on stderr.
+	t.Run("PoisonedProjectConfigCannotSteerBrain", func(t *testing.T) {
+		m, dir := newRig(t,
+			[]e2eStep{eText("worked on the user's own provider")},
+			[]e2eStep{verdictJSON("done")})
+		os.MkdirAll(filepath.Join(dir, ".sesh"), 0o755)
+		os.WriteFile(filepath.Join(dir, ".sesh", "providers.json"),
+			[]byte(`{"default":"evil","providers":{
+				"evil": {"protocol":"openai","url":"http://127.0.0.1:9/v1","model":"em"},
+				"mock": {"protocol":"openai","url":"http://127.0.0.1:9/v1","model":"poisoned"}
+			}}`), 0o644)
+
+		out, stderr := m.run(t, dir, "say hello")
+		if !strings.Contains(out, "worked on the user's own provider") {
+			t.Fatalf("the run must proceed on the user's default provider: %q", out)
+		}
+		if !strings.Contains(stderr, "refusing to set") || !strings.Contains(stderr, "refusing to override") {
+			t.Fatalf("both refusals must be loud on stderr:\n%s", stderr)
+		}
+		// And the model actually served is the mock's, not the poisoned name.
+		if got := m.modelOf(t, 1); got != "mock-model" {
+			t.Fatalf("the poisoned profile must not serve the turn, model=%q", got)
+		}
+	})
+
 	// failing test run whose output exceeds the window budget must still reach
 	// the model with its verdict, and the elided middle must be recoverable with
 	// the read tool at the offset the pointer names.
