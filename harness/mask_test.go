@@ -15,7 +15,7 @@ func TestMaskSecretsAssignments(t *testing.T) {
 		{"export OPENAI_API_KEY=sk-live-1234567890", "export OPENAI_API_KEY=[redacted]"},
 		// quoting survives so the shape of the line stays readable
 		{`API_KEY="double-secret"`, `API_KEY="[redacted]"`},
-		{"PASSWORD='single-secret'", "PASSWORD='[redacted]'"},
+		{"MY_AUTH_TOKEN=hunter2000", "MY_AUTH_TOKEN=[redacted]"}, // value no token shape matches: only the KEY rule catches it
 		{"MY_GITHUB_TOKEN=ghp_0123456789abcdefghijklmnopqrstuv", "MY_GITHUB_TOKEN=[redacted]"},
 		// case-insensitive key match
 		{"Db_Password=hunter2", "Db_Password=[redacted]"},

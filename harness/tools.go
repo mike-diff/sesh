@@ -446,7 +446,7 @@ func boundedBash(ctx context.Context, command string) (string, bool) {
 		s = fmt.Sprintf("... [output capped: %d earlier bytes dropped]\n", out.dropped) + s
 	}
 	if err != nil {
-		return strings.TrimSpace(s + "\n" + err.Error()), true
+		return annotateExit(command, strings.TrimSpace(s+"\n"+err.Error()), err), true
 	}
 	if len(s) == 0 {
 		return "(no output)", false
