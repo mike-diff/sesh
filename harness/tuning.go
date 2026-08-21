@@ -138,6 +138,13 @@ type Tuning struct {
 	// the judge as a wall of PASS lines, so both ends are kept for the same
 	// reason the tool result keeps both.
 	TranscriptResult int `json:"transcript_result,omitempty"`
+	// ResultMaskOff drops secret masking of tool output (assignment values
+	// under sensitive-looking keys, plus well-known credential token shapes,
+	// replaced with [redacted] before anything is kept: the model's shaped
+	// copy and the spilled file both hold the masked text). Default off, so
+	// masking is on. Inverted so the zero value keeps the default, like every
+	// dial.
+	ResultMaskOff bool `json:"result_mask_off,omitempty"`
 }
 
 func defaultTuning() Tuning {
@@ -293,6 +300,9 @@ func overlayTuning(t *Tuning, got Tuning) {
 	}
 	if got.ResultSpillOff {
 		t.ResultSpillOff = true
+	}
+	if got.ResultMaskOff {
+		t.ResultMaskOff = true
 	}
 	if got.UpdateCheck {
 		t.UpdateCheck = true

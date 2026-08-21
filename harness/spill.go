@@ -132,6 +132,13 @@ func tailCut(s string, budget int) int {
 // middle, and the note between them says how much was dropped and where the
 // full text is.
 func shape(s string) string {
+	// Masking runs FIRST, before any copy is kept: the shaped ends the model
+	// sees, and the spilled file it can read back, must both hold the masked
+	// text. Masking after the spill would persist the secret on disk; masking
+	// only the model's copy would leave the read-back path leaky.
+	if !tune.ResultMaskOff {
+		s = maskSecrets(s)
+	}
 	max := tune.ResultMaxChars
 	if max <= 0 || len(s) <= max {
 		return s
