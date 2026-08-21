@@ -200,26 +200,52 @@ func providersPath() string {
 	return filepath.Join(os.Getenv("HOME"), ".sesh", "providers.json")
 }
 
-// loadProviders reads the global providers.json, then overlays the project one.
-// A missing or unparseable file is skipped silently: the harness still works on
-// flags alone, so providers.json is purely additive.
+// loadProviders reads the global providers.json, then the project one under
+// trust rules, printing any refusals as startup notes. A missing or
+// unparseable file is skipped silently: the harness still works on flags
+// alone, so providers.json is purely additive.
 func loadProviders() ProvidersConfig {
-	cfg := ProvidersConfig{Providers: map[string]Profile{}}
-	for _, p := range []string{
-		providersPath(),        // global
-		".sesh/providers.json", // project overlay
-	} {
-		b, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		var got ProvidersConfig
-		if json.Unmarshal(b, &got) != nil {
-			continue
-		}
-		cfg.overlay(got)
+	cfg, notes := loadProvidersNotes()
+	for _, n := range notes {
+		fmt.Fprintf(os.Stderr, "%s%s%s\n", yellow, n, reset)
 	}
 	return cfg
+}
+
+// loadProvidersNotes resolves the layered provider config. The project layer
+// may ADD profiles (a repo pinning its team's gateway stays one flag away) but
+// can never steer the brain itself: a checked-out repo choosing the default,
+// or redefining a global profile's URL, would send every conversation to
+// wherever the repo names, without the user naming anything. The same trust
+// rule the tool mods and the MCP overlay already carry, applied here.
+func loadProvidersNotes() (ProvidersConfig, []string) {
+	cfg := ProvidersConfig{Providers: map[string]Profile{}}
+	var notes []string
+	if b, err := os.ReadFile(providersPath()); err == nil {
+		var got ProvidersConfig
+		if json.Unmarshal(b, &got) == nil {
+			cfg.overlay(got)
+		}
+	}
+	if b, err := os.ReadFile(".sesh/providers.json"); err == nil {
+		var got ProvidersConfig
+		if json.Unmarshal(b, &got) == nil {
+			if got.Default != "" {
+				notes = append(notes, fmt.Sprintf(
+					"project .sesh/providers.json: refusing to set \"default\" to %q; a checked-out repo cannot choose where conversations are sent (pass -provider %q to use a project profile explicitly)",
+					got.Default, got.Default))
+			}
+			for _, name := range got.names() {
+				if _, taken := cfg.Providers[name]; taken {
+					notes = append(notes, fmt.Sprintf(
+						"project .sesh/providers.json: refusing to override global provider %q; rename the project profile", name))
+					continue
+				}
+				cfg.Providers[name] = got.Providers[name]
+			}
+		}
+	}
+	return cfg, notes
 }
 
 // loadGlobalProviders reads only the global file, the one /provider add and

@@ -13,6 +13,7 @@ package harness
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,6 +138,13 @@ type Tuning struct {
 	// the judge as a wall of PASS lines, so both ends are kept for the same
 	// reason the tool result keeps both.
 	TranscriptResult int `json:"transcript_result,omitempty"`
+	// ResultMaskOff drops secret masking of tool output (assignment values
+	// under sensitive-looking keys, plus well-known credential token shapes,
+	// replaced with [redacted] before anything is kept: the model's shaped
+	// copy and the spilled file both hold the masked text). Default off, so
+	// masking is on. Inverted so the zero value keeps the default, like every
+	// dial.
+	ResultMaskOff bool `json:"result_mask_off,omitempty"`
 }
 
 func defaultTuning() Tuning {
@@ -171,10 +179,22 @@ var tune = defaultTuning()
 
 // loadTuning resolves defaults, then the global file, then the project file,
 // each layer overriding only the fields it states. A missing or unparseable
-// file is skipped: tuning is purely additive, like every mod.
+// file is skipped: tuning is purely additive, like every mod. The project
+// layer may not set the brief routing keys: they name a provider profile, and
+// a checked-out repo routing handoff briefs (which carry the transcript)
+// wherever it likes is the same exfiltration the providers overlay refuses.
 func loadTuning() Tuning {
+	t, notes := loadTuningNotes()
+	for _, n := range notes {
+		fmt.Fprintf(os.Stderr, "%s%s%s\n", yellow, n, reset)
+	}
+	return t
+}
+
+func loadTuningNotes() (Tuning, []string) {
 	t := defaultTuning()
-	for _, p := range []string{
+	var notes []string
+	for i, p := range []string{
 		filepath.Join(os.Getenv("HOME"), ".sesh", "tuning.json"),
 		".sesh/tuning.json",
 	} {
@@ -186,9 +206,14 @@ func loadTuning() Tuning {
 		if json.Unmarshal(stripJSONComments(b), &got) != nil {
 			continue
 		}
+		if i == 1 && (got.BriefProvider != "" || got.BriefModel != "") {
+			notes = append(notes,
+				"project .sesh/tuning.json: ignoring brief_provider/brief_model; brief routing is user-owned, not repo-owned (a repo must not choose where transcripts are sent)")
+			got.BriefProvider, got.BriefModel = "", ""
+		}
 		overlayTuning(&t, got)
 	}
-	return t
+	return t, notes
 }
 
 // stripJSONComments removes // line and /* */ block comments so tuning.json can
@@ -275,6 +300,9 @@ func overlayTuning(t *Tuning, got Tuning) {
 	}
 	if got.ResultSpillOff {
 		t.ResultSpillOff = true
+	}
+	if got.ResultMaskOff {
+		t.ResultMaskOff = true
 	}
 	if got.UpdateCheck {
 		t.UpdateCheck = true
