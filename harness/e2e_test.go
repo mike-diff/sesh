@@ -280,6 +280,14 @@ func (m *e2eMock) reset(worker, judge []e2eStep) {
 // run executes one headless sesh invocation in the scenario directory.
 func (m *e2eMock) run(t *testing.T, dir, prompt string, args ...string) (string, string) {
 	t.Helper()
+	_, out, errb := m.runCode(t, dir, prompt, args...)
+	return out, errb
+}
+
+// runCode is run plus the process exit code, so scenarios can pin the
+// print-mode exit-status contract.
+func (m *e2eMock) runCode(t *testing.T, dir, prompt string, args ...string) (int, string, string) {
+	t.Helper()
 	cmd := exec.Command(seshBin, append([]string{"-p", prompt, "-yes"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "HOME="+m.homeDir)
@@ -291,12 +299,19 @@ func (m *e2eMock) run(t *testing.T, dir, prompt string, args ...string) (string,
 	}
 	go func() { done <- cmd.Wait() }()
 	select {
-	case <-done:
+	case err := <-done:
+		code := 0
+		if ee, ok := err.(*exec.ExitError); ok {
+			code = ee.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		return code, out.String(), errb.String()
 	case <-time.After(60 * time.Second):
 		cmd.Process.Kill()
 		t.Fatal("sesh run timed out")
+		return 0, "", "" // unreachable
 	}
-	return out.String(), errb.String()
 }
 
 // lastToolResult digs the newest tool result out of the n-th captured worker
@@ -665,6 +680,59 @@ func TestE2E(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(dir, "x.txt")); err == nil {
 			t.Fatal("a denied write must not touch disk")
+		}
+	})
+
+	// The print-mode exit-status contract, through the real binary. A
+	// scriptable caller must tell done, blocked-on-user, and operational
+	// failure apart. Breaker: drop the driveBlocked case from the print-mode
+	// exit switch and PrintExitBlocked sees 0, not 2; return driveBlocked on
+	// judge transport failure (the old conflation) and PrintExitJudgeFail
+	// sees 2, not 1.
+	t.Run("PrintExitDone", func(t *testing.T) {
+		m, dir := newRig(t,
+			[]e2eStep{eTool("write", `{"path":"x.txt","content":"hi"}`), eText("wrote x.txt")},
+			[]e2eStep{verdictJSON("x.txt exists with the asked content")})
+		code, out, _ := m.runCode(t, dir, "write x.txt")
+		if code != 0 {
+			t.Fatalf("done must exit 0, got %d", code)
+		}
+		if !strings.Contains(out, "wrote x.txt") {
+			t.Fatalf("final reply missing: %q", out)
+		}
+	})
+	t.Run("PrintExitBlocked", func(t *testing.T) {
+		m, dir := newRig(t,
+			[]e2eStep{eTool("write", `{"path":"x.txt","content":"hi"}`), eText("waiting on you")},
+			[]e2eStep{eText(`{"done": false, "blocked": true, "reason": "two valid designs; the user must pick"}`)})
+		code, _, errb := m.runCode(t, dir, "write x.txt")
+		if code != 2 {
+			t.Fatalf("blocked must exit 2, got %d; stderr:\n%s", code, errb)
+		}
+		if !strings.Contains(errb, "needs you") {
+			t.Fatalf("blocked notice missing from stderr:\n%s", errb)
+		}
+	})
+	t.Run("PrintExitMaxIters", func(t *testing.T) {
+		notDone := eText(`{"done": false, "blocked": false, "reason": "insufficient evidence: tests not run"}`)
+		m, dir := newRig(t,
+			[]e2eStep{eTool("write", `{"path":"a.txt","content":"1"}`), eTool("write", `{"path":"b.txt","content":"2"}`), eText("out of iterations")},
+			[]e2eStep{notDone, notDone})
+		code, _, errb := m.runCode(t, dir, "write files", "-max-iters", "2")
+		if code != 4 {
+			t.Fatalf("max-iters must exit 4, got %d; stderr:\n%s", code, errb)
+		}
+	})
+	t.Run("PrintExitJudgeFail", func(t *testing.T) {
+		m, dir := newRig(t,
+			[]e2eStep{eTool("write", `{"path":"x.txt","content":"hi"}`), eText("no verdict came")},
+			[]e2eStep{{Kind: "error", Status: 500, Msg: "judge exploded"}})
+		code, _, errb := m.runCode(t, dir, "write x.txt")
+		if code != 1 {
+			t.Fatalf("judge failure must exit 1, got %d; stderr:\n%s", code, errb)
+		}
+		if !strings.Contains(errb, "judge unavailable") {
+			t.Fatalf("judge-unavailable notice missing from stderr:\n%s", errb)
 		}
 	})
 	// The defect this feature exists for, end to end through the real binary: a

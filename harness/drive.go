@@ -25,13 +25,16 @@ import (
 )
 
 // drive outcomes. Print mode maps them to exit codes; interactive maps them
-// to transcript notices.
+// to transcript notices. Blocked gets its own value, not error's 1: a
+// scriptable caller must distinguish "the judge wants the user" from
+// "something broke", and a dead judge is a breakage, not a user decision.
 const (
 	driveDone        = 0
 	driveBlocked     = 1
 	driveStuck       = 3
 	driveMaxIters    = 4
 	driveInterrupted = 5
+	driveJudgeFail   = 6
 )
 
 // workedOn reports whether these turns contain tool activity: the line
@@ -240,9 +243,11 @@ func drive(r *repl, cfg driveConfig, firstTurns []agent.Turn) int {
 					say("== paused; your next message steers")
 					return driveInterrupted
 				}
-				// No verdict means no mandate to keep spending: stop quietly.
+				// No verdict means no mandate to keep spending: stop quietly. This is
+				// an operational failure, not a user decision, so it gets its own
+				// outcome instead of borrowing blocked.
 				say("== judge unavailable (%s); returning to you", compact(jerr.Error()))
-				return driveBlocked
+				return driveJudgeFail
 			case v.Done:
 				if iter > 1 {
 					say("== done after %d iterations: %s", iter, compact(v.Reason))

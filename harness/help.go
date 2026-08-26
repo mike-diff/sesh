@@ -117,7 +117,7 @@ FILES AND MODS (project .sesh/ overrides global ~/.sesh/)
                                cleared when a session exits
 
 EXIT CODES (print mode)
-  0 done or blocked-on-user · 1 error · 3 stuck (no progress) · 4 max iterations
+  0 done · 1 error (incl. judge unavailable) · 2 blocked-on-user · 3 stuck (no progress) · 4 max iterations
 
 EXAMPLES
   sesh -provider local

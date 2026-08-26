@@ -327,6 +327,10 @@ func Main() {
 		pm.reapAll() // a print run that started a server must not leak it
 		releaseLock(r.sess.ID)
 		switch code {
+		case driveBlocked:
+			os.Exit(2) // its own status: a scriptable caller must tell blocked from done (0) and error (1)
+		case driveJudgeFail, driveInterrupted:
+			os.Exit(1) // operational failure, same class as a transport error; 130 remains the signal path
 		case driveStuck, driveMaxIters:
 			os.Exit(code)
 		}

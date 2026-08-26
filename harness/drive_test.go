@@ -430,12 +430,13 @@ func newInterruptsTest(cleanup func()) *interrupts {
 	return &interrupts{cleanup: cleanup}
 }
 
-// TestDriveJudgeUnavailable: no verdict means no mandate to keep spending.
+// TestDriveJudgeUnavailable: no verdict means no mandate to keep spending, and
+// the outcome is operational, not a user decision.
 func TestDriveJudgeUnavailable(t *testing.T) {
 	p := &seqChat{} // judge call errors immediately
 	r := driveRepl(t, p, workTurns())
 	_, count := counting()
-	if code := drive(r, driveConfig{request: "fix", maxIters: 5, mutations: count}, workTurns()); code != driveBlocked {
+	if code := drive(r, driveConfig{request: "fix", maxIters: 5, mutations: count}, workTurns()); code != driveJudgeFail {
 		t.Fatalf("code %d", code)
 	}
 }
