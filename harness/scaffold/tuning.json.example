@@ -93,5 +93,7 @@
   //                             // scrolls vertically (cursor kept in view)
   // "skill_note_off": false,    // true reclaims tokens on strong-only setups
   // "brief_provider": "",       // write handoff briefs with another profile...
-  // "brief_model": ""           // ...or another model (e.g. a cheap local one)
+  // "brief_model": "",          // ...or another model (e.g. a cheap local one)
+  // "judge_provider": "",       // judge work with another profile...
+  // "judge_model": ""           // ...or another model (e.g. a cheap local one)
 }

@@ -75,6 +75,33 @@ func TestTuningBriefDials(t *testing.T) {
 	}
 }
 
+// TestTuningJudgeDials: judge string dials keep the same global-to-project
+// overlay semantics as brief dials. Breaker: remove their setters from
+// overlayTuning and judge_model never leaves the tuning file.
+func TestTuningJudgeDials(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	chtmp(t)
+
+	os.MkdirAll(filepath.Join(home, ".sesh"), 0o755)
+	os.WriteFile(filepath.Join(home, ".sesh", "tuning.json"),
+		[]byte(`{"judge_provider": "reviewer", "judge_model": "cheap-rig"}`), 0o644)
+	got := loadTuning()
+	if got.JudgeProvider != "reviewer" || got.JudgeModel != "cheap-rig" {
+		t.Fatalf("judge dials not applied: %+v", got)
+	}
+
+	os.MkdirAll(".sesh", 0o755)
+	os.WriteFile(".sesh/tuning.json", []byte(`{"judge_model": "other"}`), 0o644)
+	got = loadTuning()
+	if got.JudgeModel != "other" {
+		t.Fatalf("project must beat global: %q", got.JudgeModel)
+	}
+	if got.JudgeProvider != "reviewer" {
+		t.Fatalf("project must not erase global fields it does not state: %q", got.JudgeProvider)
+	}
+}
+
 // TestRender: placeholders substitute, repeats included; unknown placeholders
 // survive untouched (a template typo must stay visible, never vanish).
 func TestRender(t *testing.T) {

@@ -1002,24 +1002,20 @@ func (r *repl) preflight(line string) (refused bool) {
 	return false
 }
 
-// handoff seals this session and continues the conversation in a fresh one:
-// briefWriter returns the provider that writes handoff briefs and the model
-// label to show when it is not the worker: the brief_provider/brief_model
-// dials choose a cheaper brain (the cheap-brief experiment). Built fresh
-// per handoff (construction is cheap and handoffs are rare); any resolution
-// failure falls back to the worker with a visible note, because a handoff
-// must never fail over a tuning preference.
-func (r *repl) briefWriter() (agent.Provider, string) {
-	if tune.BriefProvider == "" && tune.BriefModel == "" {
+// auxBrain resolves a provider for a brief or judge. Auxiliary brains are
+// built fresh because construction is cheap and each auxiliary call is rare.
+// Resolution failures visibly fall back to the worker: a tuning preference
+// must not interrupt the handoff or drive lifecycle.
+func (r *repl) auxBrain(prov, model string) (agent.Provider, string) {
+	if prov == "" && model == "" {
 		return r.p, ""
 	}
 	proto, url, key, keyEnv := r.protocol, r.url, r.key, r.keyEnv
-	model := tune.BriefModel
 	dials := r.pcfg.Providers[r.current].dials()
-	if tune.BriefProvider != "" {
-		pname, prof, err := r.pcfg.resolve(tune.BriefProvider)
+	if prov != "" {
+		pname, prof, err := r.pcfg.resolve(prov)
 		if err != nil {
-			emit("%s  brief_provider %q not found; the worker writes its own brief%s\n", dim, tune.BriefProvider, reset)
+			emit("%s  auxiliary provider %q not found; falling back to the worker%s\n", dim, prov, reset)
 			return r.p, ""
 		}
 		proto, url, key, keyEnv = prof.Protocol, prof.URL, prof.Key, prof.KeyEnv
@@ -1032,15 +1028,23 @@ func (r *repl) briefWriter() (agent.Provider, string) {
 		}
 	}
 	if err := resolveDefaults(proto, &url, &model); err != nil {
-		emit("%s  brief writer unavailable (%v); the worker writes its own brief%s\n", dim, err, reset)
+		emit("%s  auxiliary brain unavailable (%v); falling back to the worker%s\n", dim, err, reset)
 		return r.p, ""
 	}
-	bp, err := buildProvider(proto, url, model, key, keyEnv, dials)
+	p, err := buildProvider(proto, url, model, key, keyEnv, dials)
 	if err != nil {
-		emit("%s  brief writer unavailable (%v); the worker writes its own brief%s\n", dim, err, reset)
+		emit("%s  auxiliary brain unavailable (%v); falling back to the worker%s\n", dim, err, reset)
 		return r.p, ""
 	}
-	return bp, model
+	return p, model
+}
+
+func (r *repl) briefWriter() (agent.Provider, string) {
+	return r.auxBrain(tune.BriefProvider, tune.BriefModel)
+}
+
+func (r *repl) judgeBrain() (agent.Provider, string) {
+	return r.auxBrain(tune.JudgeProvider, tune.JudgeModel)
 }
 
 // brief written by a fresh-context call, ledger carried forward, recent turns

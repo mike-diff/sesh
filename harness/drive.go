@@ -200,6 +200,8 @@ func drive(r *repl, cfg driveConfig, firstTurns []agent.Turn) int {
 		return driveDone // conversation, not work: nothing to drive
 	}
 
+	judge, _ := r.judgeBrain()
+
 	iterTurns := firstTurns
 	stuck := 0
 	for iter := 1; ; iter++ {
@@ -221,12 +223,12 @@ func drive(r *repl, cfg driveConfig, firstTurns []agent.Turn) int {
 			transcript := renderTranscript(iterTurns, tune.TranscriptResult)
 			var jUsed agent.Usage
 			var jerr error
-			v, jUsed, jerr = judgeGoal(jctx, r.p, cfg.request, transcript)
+			v, jUsed, jerr = judgeGoal(jctx, judge, cfg.request, transcript)
 			if isJudgeParseErr(jerr) {
 				r.accountAux(jUsed)
 				say("== judge reply unparseable; asking once more for JSON only")
 				var ru agent.Usage
-				v, ru, jerr = judgeGoalRepair(jctx, r.p, cfg.request, transcript, jerr.Error())
+				v, ru, jerr = judgeGoalRepair(jctx, judge, cfg.request, transcript, jerr.Error())
 				jUsed = jUsed.Add(ru)
 			}
 			jdone()

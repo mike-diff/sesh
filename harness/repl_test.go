@@ -501,6 +501,43 @@ func TestBriefWriterDial(t *testing.T) {
 	}
 }
 
+// TestJudgeBrainDial: judge_provider/judge_model choose the fresh-context
+// judge, and a missing profile visibly leaves judging to the worker. Breakers:
+// ignore judgeBrain's dials and the model case returns the worker; propagate
+// the lookup failure and the fallback case never reaches a verdict.
+func TestJudgeBrainDial(t *testing.T) {
+	r := newTestRepl(t)
+	r.p = fakeChat{text: "x"}
+	oldTune := tune
+	defer func() { tune = oldTune }()
+	oldConsole := activeConsole
+	defer func() { activeConsole = oldConsole }()
+	var notes strings.Builder
+	activeConsole = &plainConsole{out: &notes}
+
+	tune.JudgeProvider, tune.JudgeModel = "", ""
+	if jp, label := r.judgeBrain(); jp != r.p || label != "" {
+		t.Fatalf("no dial set: the worker must judge, got label %q", label)
+	}
+
+	tune.JudgeModel = "cheap-model"
+	jp, label := r.judgeBrain()
+	if label != "cheap-model" {
+		t.Fatalf("judge_model dial ignored: label %q", label)
+	}
+	if jp == nil || jp == r.p {
+		t.Fatal("dialed judge must be a distinct provider on the worker's endpoint")
+	}
+
+	tune.JudgeProvider, tune.JudgeModel = "no-such-profile", ""
+	if jp, _ := r.judgeBrain(); jp != r.p {
+		t.Fatal("unresolvable dial must fall back to the worker, never fail the drive")
+	}
+	if !strings.Contains(notes.String(), `auxiliary provider "no-such-profile" not found`) {
+		t.Fatalf("fallback must be visible, got %q", notes.String())
+	}
+}
+
 func TestKeyHint(t *testing.T) {
 	if h := keyHint(&provider.APIError{Status: 401, Message: "bad"}, "remote"); !strings.Contains(h, "/provider add remote") {
 		t.Fatalf("401 hint: %q", h)

@@ -2,7 +2,11 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -183,6 +187,47 @@ func TestDriveDoneFirstVerdict(t *testing.T) {
 	}
 	if len(r.history) != len(workTurns()) {
 		t.Fatal("a done verdict must not grow history")
+	}
+}
+
+// TestDriveUsesJudgeProvider: a judge_provider profile owns verdict calls, not
+// the worker. Breaker: pass r.p to judgeGoal and this spy never sees its judge
+// prompt.
+func TestDriveUsesJudgeProvider(t *testing.T) {
+	var sawPrompt string
+	judge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		for _, m := range body.Messages {
+			if strings.Contains(m.Content, "<transcript>") {
+				sawPrompt = m.Content
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"done\\\":true,\\\"blocked\\\":false,\\\"reason\\\":\\\"verified\\\"}\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer judge.Close()
+
+	old := tune
+	defer func() { tune = old }()
+	tune.JudgeProvider, tune.JudgeModel = "judge", ""
+	r := driveRepl(t, fakeChat{text: `{"done": true, "blocked": false, "reason": "worker verdict"}`}, workTurns())
+	r.pcfg = ProvidersConfig{Providers: map[string]Profile{
+		"judge": {Protocol: "openai", URL: judge.URL, Model: "judge-model"},
+	}}
+	_, count := counting()
+	if code := drive(r, driveConfig{request: "fix the bug", maxIters: 2, mutations: count}, workTurns()); code != driveDone {
+		t.Fatalf("code %d", code)
+	}
+	if !strings.Contains(sawPrompt, "<request>\nfix the bug\n</request>") {
+		t.Fatalf("judge provider did not receive the judge prompt: %q", sawPrompt)
 	}
 }
 

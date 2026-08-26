@@ -245,8 +245,8 @@ func Main() {
 			p: p, protocol: spec.protocol, url: spec.url, model: spec.model,
 			key: spec.key, keyEnv: spec.keyEnv, current: spec.name,
 			ctxLimit: capWindow(spec.ctxLimit),
-			sess:     sess, history: history, system: system, con: activeConsole,
-			procs: pm,
+			pcfg:     pcfg, creds: creds, sess: sess, history: history, system: system,
+			con: activeConsole, procs: pm,
 		}
 		if len(history) > 0 {
 			// Usage is unknown until the first call; estimate so preflight

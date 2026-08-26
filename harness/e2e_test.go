@@ -530,6 +530,48 @@ func TestE2E(t *testing.T) {
 		}
 	})
 
+	// Test the print-mode wire rather than the helper: this reaches the repl
+	// literal that must retain provider configuration. Breaker: make drive use
+	// r.p for the judge and its request carries mock-model instead of cheap-rig.
+	t.Run("PrintJudgeModelDial", func(t *testing.T) {
+		m, dir := newRig(t,
+			[]e2eStep{eTool("write", `{"path":"judge.txt","content":"ok"}`), eText("wrote judge.txt")},
+			[]e2eStep{verdictJSON("judge.txt exists")})
+		if err := os.MkdirAll(filepath.Join(dir, ".sesh"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".sesh", "tuning.json"), []byte(`{"judge_model":"cheap-rig"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		m.run(t, dir, "write judge.txt")
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		var workerModels, judgeModels []string
+		for _, req := range m.reqs {
+			model, _ := req.Body["model"].(string)
+			switch req.Class {
+			case "worker":
+				workerModels = append(workerModels, model)
+			case "judge":
+				judgeModels = append(judgeModels, model)
+			}
+		}
+		if len(workerModels) == 0 || len(judgeModels) == 0 {
+			t.Fatalf("expected worker and judge requests, got worker=%v judge=%v", workerModels, judgeModels)
+		}
+		for _, model := range workerModels {
+			if model != "mock-model" {
+				t.Fatalf("worker model changed with judge dial: %q", model)
+			}
+		}
+		for _, model := range judgeModels {
+			if model != "cheap-rig" {
+				t.Fatalf("judge_model did not reach the print-mode wire: %q", model)
+			}
+		}
+	})
+
 	t.Run("ReadPagesToEnd", func(t *testing.T) {
 		m, dir := newRig(t,
 			[]e2eStep{

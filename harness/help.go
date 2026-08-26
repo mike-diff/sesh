@@ -98,8 +98,8 @@ FILES AND MODS (project .sesh/ overrides global ~/.sesh/)
                                recall_links, diff_lines, proc_promote_secs,
                                max_procs, proc_log_tail, update_check,
                                input_max_rows, brief_provider, brief_model,
-                               result_max_chars, result_head_pct,
-                               result_spill_off, result_keep_days,
+                               judge_provider, judge_model, result_max_chars,
+                               result_head_pct, result_spill_off, result_keep_days,
                                transcript_result (state only what you change)
   tools/<name>                 executables that become agent tools (global
                                mount only): --schema describes, args JSON on

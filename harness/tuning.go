@@ -89,6 +89,10 @@ type Tuning struct {
 	// cheap-brief experiment.
 	BriefProvider string `json:"brief_provider,omitempty"`
 	BriefModel    string `json:"brief_model,omitempty"`
+	// JudgeProvider and JudgeModel similarly aim the fresh-context judge at a
+	// different brain. Empty (the default) means the worker's brain judges.
+	JudgeProvider string `json:"judge_provider,omitempty"`
+	JudgeModel    string `json:"judge_model,omitempty"`
 	// MaxOutputTokens caps one reply's output tokens on the anthropic
 	// protocol (the Messages API 400s a value above the model's own cap, so
 	// this must not exceed the smallest cap among the models you run; a 400
@@ -286,6 +290,8 @@ func overlayTuning(t *Tuning, got Tuning) {
 	}
 	sets(&t.BriefProvider, got.BriefProvider)
 	sets(&t.BriefModel, got.BriefModel)
+	sets(&t.JudgeProvider, got.JudgeProvider)
+	sets(&t.JudgeModel, got.JudgeModel)
 }
 
 // steerPrompt resolves a model-facing prompt template from user space:
