@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mike-diff/sesh/agent"
@@ -56,7 +57,7 @@ func fail(err error) {
 // Main is the whole product: flags, wiring, modes, and the interactive
 // loop. cmd/sesh calls it and nothing else.
 func Main() {
-	protocol := flag.String("protocol", "anthropic", "wire protocol: anthropic or openai")
+	protocol := flag.String("protocol", "anthropic", "wire protocol: anthropic, openai (chat completions), or responses (OpenAI Responses, stateless)")
 	url := flag.String("url", "", "base URL (default: the protocol's public API)")
 	model := flag.String("model", "", "model id (overrides the provider's default)")
 	providerName := flag.String("provider", "", "named provider profile from providers.json")
@@ -74,6 +75,7 @@ func Main() {
 	install := flag.Bool("install", false, "install this binary to ~/.local/bin and scaffold ~/.sesh")
 	update := flag.Bool("update", false, "replace the installed binary with the latest release")
 	showVersion := flag.Bool("version", false, "print the build commit and exit (source = built locally)")
+	trust := flag.Bool("trust", false, "use this project's .sesh/ gate, statusline, providers.json, and prompt overrides without asking (print mode needs it to use them)")
 	flag.Usage = func() { fmt.Fprint(os.Stderr, usageText()) }
 	flag.Parse()
 	if *showVersion {
@@ -89,6 +91,15 @@ func Main() {
 	initColor()         // resolve ANSI use before any colored output
 	scaffoldHome()      // first run populates ~/.sesh; later runs fill gaps only
 	tune = loadTuning() // dials resolve before anything reads them
+	// Project mods that run code, route keys, or replace prompts wait for
+	// approval; only an interactive start can ask for it.
+	var confirm func([]string) bool
+	if *printMode == "" && !*list && !*doctor && isTerminal(os.Stdin) {
+		confirm = askTrust
+	}
+	if note := resolveProjectTrust(*trust, confirm); note != "" {
+		fmt.Fprintf(os.Stderr, "%s%s%s\n", yellow, note, reset)
+	}
 
 	if *list {
 		printSessions()
@@ -272,9 +283,13 @@ func Main() {
 		sessOf := func() *Session { return r.sess }
 		if !noTools {
 			tools = append(tools,
-				taskTool(func() agent.Provider { return r.p }, sessOf, 1, *unsafePaths, pg, nil),
+				taskTool(func() agent.Provider { return r.p }, sessOf, 1, *unsafePaths, pg, r.accountChild),
 				recallTool(sessOf))
 		}
+		// Counted for the closing usage line, which scripts and the bench read.
+		var modelCalls, toolCalls atomic.Int64
+		countModel := func(agent.Usage) { modelCalls.Add(1) }
+		countTool := func(agent.ToolCall) { toolCalls.Add(1) }
 		if r.preflight(*printMode) {
 			os.Exit(1) // the message can never fit; nothing was sent
 		}
@@ -282,7 +297,7 @@ func Main() {
 		r.history = append(r.history, agent.Turn{Role: "user", Text: *printMode})
 		rehydrateImages(r.history) // a resumed session's prior images carry only a hash; load the bytes back before the wire call
 		out, spent, err := agent.Run(context.Background(), r.p, r.system, r.history, tools,
-			agent.Hooks{Gate: pg})
+			agent.Hooks{Gate: pg, OnUsage: countModel, OnToolStart: countTool})
 		if err != nil {
 			// Completed work survives the failure in a tied session: its side
 			// effects are on disk and the next scripted -p run resumes from it.
@@ -297,9 +312,7 @@ func Main() {
 			fail(err)
 		}
 		r.history = out
-		if spent.LastInput > 0 {
-			r.ctxTokens = spent.LastInput
-		}
+		r.account(spent)
 		// One-shot runs only persist when the user tied them to a session;
 		// otherwise scripted -p calls would litter the session list.
 		if tied {
@@ -312,7 +325,7 @@ func Main() {
 		// lines go to stderr; stdout stays the final reply alone.
 		code := drive(r, driveConfig{
 			request: *printMode, maxIters: *maxIters, maxTools: *maxTools, tools: tools,
-			hooks:     agent.Hooks{Gate: counted},
+			hooks:     agent.Hooks{Gate: counted, OnUsage: countModel, OnToolStart: countTool},
 			mutations: func() int { mutMu.Lock(); defer mutMu.Unlock(); return mutations },
 			say:       func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
 		}, out[mark:])
@@ -324,6 +337,10 @@ func Main() {
 		if final := lastText(r.history); final != "" {
 			fmt.Println(final) // the run's final reply, not replayed history
 		}
+		r.acctMu.Lock()
+		fmt.Fprintf(os.Stderr, "== usage: in=%d cache_read=%d cache_write=%d out=%d model_calls=%d tool_calls=%d\n",
+			r.totIn, r.totCache, r.totWrite, r.totOut, modelCalls.Load(), toolCalls.Load())
+		r.acctMu.Unlock()
 		pm.reapAll() // a print run that started a server must not leak it
 		releaseLock(r.sess.ID)
 		switch code {

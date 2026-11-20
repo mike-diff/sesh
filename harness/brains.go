@@ -25,15 +25,15 @@ func resolveDefaults(protocol string, url, model *string) error {
 		if *model == "" {
 			*model = "claude-opus-4-8"
 		}
-	case "openai":
+	case "openai", "responses":
 		if *url == "" {
 			*url = "https://api.openai.com/v1"
 		}
 		if *model == "" {
-			return fmt.Errorf("-model is required with -protocol openai")
+			return fmt.Errorf("-model is required with -protocol %s", protocol)
 		}
 	default:
-		return fmt.Errorf("unknown protocol %q (anthropic or openai)", protocol)
+		return fmt.Errorf("unknown protocol %q (anthropic, openai, or responses)", protocol)
 	}
 	return nil
 }
@@ -69,15 +69,19 @@ func buildProvider(protocol, url, model, key, keyEnv string, dials brainDials) (
 		if mt <= 0 {
 			mt = tune.MaxOutputTokens
 		}
-		return provider.Anthropic{BaseURL: url, Key: key, Model: model, MaxTokens: mt, ThinkingBudget: dials.thinkingBudget}, nil
-	default: // resolveDefaults already rejected anything but openai
+		return provider.Anthropic{BaseURL: url, Key: key, Model: model, MaxTokens: mt, ThinkingBudget: dials.thinkingBudget,
+			Effort: dials.effort, CacheTTL: dials.cacheTTL}, nil
+	default: // resolveDefaults already rejected anything but openai and responses
 		if key == "" {
 			key = os.Getenv("OPENAI_API_KEY")
 		}
 		if key == "" && strings.Contains(url, "api.openai.com") {
 			return nil, fmt.Errorf("set %s", hint("OPENAI_API_KEY"))
 		}
-		return provider.OpenAI{BaseURL: url, Key: key, Model: model, MaxTokens: dials.maxTokens, ReasoningEffort: dials.reasoningEffort}, nil
+		if protocol == "responses" {
+			return provider.Responses{BaseURL: url, Key: key, Model: model, MaxTokens: dials.maxTokens, Effort: dials.openaiEffort()}, nil
+		}
+		return provider.OpenAI{BaseURL: url, Key: key, Model: model, MaxTokens: dials.maxTokens, ReasoningEffort: dials.openaiEffort()}, nil
 	}
 }
 

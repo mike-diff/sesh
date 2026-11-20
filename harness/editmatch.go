@@ -290,7 +290,7 @@ func words(s string) []string {
 // ---------------------------------------------------------------------------
 
 func doEditHardened(path, old, new string, unsafe bool) (string, bool) {
-	if msg := confine(path, unsafe); msg != "" {
+	if msg := confineWrite(path, unsafe); msg != "" {
 		return msg, true
 	}
 	raw, err := os.ReadFile(path)

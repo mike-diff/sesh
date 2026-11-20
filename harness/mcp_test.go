@@ -61,7 +61,7 @@ func gauntletMain() {
 			}})
 		case "tools/list":
 			send(map[string]any{"jsonrpc": "2.0", "id": *msg.ID, "result": map[string]any{"tools": []tool{
-				{"name": "echo", "description": "echo text back", "inputSchema": map[string]any{"type": "object"}, "annotations": map[string]any{"readOnlyHint": true}},
+				{"name": "echo", "description": "echo text back", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"text": map[string]any{"type": "string"}}}, "annotations": map[string]any{"readOnlyHint": true}},
 				{"name": "fails", "description": "always fails", "inputSchema": map[string]any{"type": "object"}},
 				{"name": "env_echo", "description": "report GAUNTLET_SECRET", "inputSchema": map[string]any{"type": "object"}},
 				{"name": "big", "description": "2MB of output", "inputSchema": map[string]any{"type": "object"}},
@@ -171,6 +171,25 @@ func TestMCPUnknownToolNamesValidOnes(t *testing.T) {
 	out, isErr := mcpCall(t, "bogus", `{}`)
 	if !isErr || !strings.Contains(out, "echo") || !strings.Contains(out, "fails") {
 		t.Fatalf("unknown-tool error must list the server's tools: %q", out)
+	}
+}
+
+// TestMCPDescribeReturnsSchemaWithoutCalling: describe hands the model the
+// tool's argument schema and never runs the tool. Breakers: ignore describe
+// and the dying tool kills the server; return the description instead of the
+// schema and the property name is missing.
+func TestMCPDescribeReturnsSchemaWithoutCalling(t *testing.T) {
+	mcpHome(t, map[string]mcpServerConf{"gauntlet": gauntletConf(nil)})
+	tl, _, _ := mcpTool()
+	out, isErr := tl.Run(context.Background(), json.RawMessage(`{"server":"gauntlet","tool":"echo","describe":true}`))
+	if isErr || !strings.Contains(out, `"text"`) {
+		t.Fatalf("describe must return the argument schema: %q err=%v", out, isErr)
+	}
+	if out, isErr := tl.Run(context.Background(), json.RawMessage(`{"server":"gauntlet","tool":"dies","describe":true}`)); isErr {
+		t.Fatalf("describe must not call the tool: %q", out)
+	}
+	if out, isErr := tl.Run(context.Background(), json.RawMessage(`{"server":"gauntlet","tool":"echo","args":{"text":"still up"}}`)); isErr || out != "still up" {
+		t.Fatalf("the server must still be alive after describing a dying tool: %q err=%v", out, isErr)
 	}
 }
 

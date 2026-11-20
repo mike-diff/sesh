@@ -258,6 +258,42 @@ func confine(path string, unsafe bool) string {
 	return ""
 }
 
+// confineWrite is the mutation-side path policy: confine, plus two places
+// inside the project the file tools never write. .git holds hooks and config
+// that run code on the next git command; .sesh holds the mods that change how
+// sesh itself behaves (gate, prompts, providers). -unsafe-paths lifts both,
+// like the directory bound.
+func confineWrite(path string, unsafe bool) string {
+	if msg := confine(path, unsafe); msg != "" || unsafe {
+		return msg
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	if r, err := filepath.EvalSymlinks(cwd); err == nil {
+		cwd = r
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	rel, err := filepath.Rel(cwd, resolveExistingPrefix(abs))
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if parts[0] == ".sesh" {
+		return "refusing to write .sesh/: those files change how sesh itself behaves, so the user edits them (they can rerun with -unsafe-paths)"
+	}
+	for _, p := range parts {
+		if p == ".git" {
+			return "refusing to write inside .git: its hooks and config run code on the next git command; use git itself through bash"
+		}
+	}
+	return ""
+}
+
 // readableSeshData carves the archive out of the ~/.sesh refusal:
 // sessions, chain ledgers, and spilled tool output are exactly the files
 // context gets offloaded to, so the agent (and its subagents) must always be
@@ -356,7 +392,7 @@ func doRead(path string, unsafe bool, offset, limit int) (string, bool) {
 }
 
 func doWrite(path, content string, unsafe bool) (string, bool) {
-	if msg := confine(path, unsafe); msg != "" {
+	if msg := confineWrite(path, unsafe); msg != "" {
 		return msg, true
 	}
 	// Overwriting is the risky case: capture what is being replaced so the

@@ -1,0 +1,1 @@
+Add a function `Slugify(s string) string` to this Go package (in slug.go). It lowercases the input, keeps ASCII letters and digits, turns every run of any other characters into a single "-", and never starts or ends with "-". Add tests for it, and verify with `go test ./...`.

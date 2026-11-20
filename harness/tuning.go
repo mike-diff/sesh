@@ -141,6 +141,10 @@ type Tuning struct {
 	// the judge as a wall of PASS lines, so both ends are kept for the same
 	// reason the tool result keeps both.
 	TranscriptResult int `json:"transcript_result,omitempty"`
+	// ProjectContextMax caps the bytes of AGENTS.md (or CLAUDE.md) gathered
+	// from the git root down to the working directory. Default 32768. The
+	// nearest files win the budget; farther ones are dropped, loudly.
+	ProjectContextMax int `json:"project_context_max,omitempty"`
 }
 
 func defaultTuning() Tuning {
@@ -166,6 +170,7 @@ func defaultTuning() Tuning {
 		ResultHeadPct:     25,
 		ResultKeepDays:    7,
 		TranscriptResult:  300,
+		ProjectContextMax: 32768,
 	}
 }
 
@@ -266,6 +271,7 @@ func overlayTuning(t *Tuning, got Tuning) {
 	set(&t.ResultHeadPct, got.ResultHeadPct)
 	set(&t.ResultKeepDays, got.ResultKeepDays)
 	set(&t.TranscriptResult, got.TranscriptResult)
+	set(&t.ProjectContextMax, got.ProjectContextMax)
 	// DiffLines accepts -1 (disable), so its overlay applies on any nonzero.
 	if got.DiffLines != 0 {
 		t.DiffLines = got.DiffLines
@@ -302,10 +308,11 @@ func overlayTuning(t *Tuning, got Tuning) {
 // per template in ~/.sesh/prompts/README.md.
 func steerPrompt(name, builtin string) string {
 	home := os.Getenv("HOME")
-	for _, p := range []string{
-		filepath.Join(".sesh", "prompts", name+".md"),
-		filepath.Join(home, ".sesh", "prompts", name+".md"),
-	} {
+	project := filepath.Join(".sesh", "prompts", name+".md")
+	for _, p := range []string{project, filepath.Join(home, ".sesh", "prompts", name+".md")} {
+		if p == project && !projectModsOK() {
+			continue // a project prompt replaces sesh's own judge or brief: approval first
+		}
 		if b, err := os.ReadFile(p); err == nil && len(b) > 0 {
 			return string(b)
 		}

@@ -128,6 +128,7 @@ func TestSteerPromptChain(t *testing.T) {
 	}
 	os.MkdirAll(".sesh/prompts", 0o755)
 	os.WriteFile(".sesh/prompts/judge.md", []byte("PROJECT"), 0o644)
+	trustProjectMods(t)
 	if got := steerPrompt("judge", "BUILTIN"); got != "PROJECT" {
 		t.Fatalf("project override: %q", got)
 	}
@@ -140,6 +141,7 @@ func TestJudgeUsesPromptMod(t *testing.T) {
 	chtmp(t)
 	os.MkdirAll(".sesh/prompts", 0o755)
 	os.WriteFile(".sesh/prompts/judge.md", []byte("CUSTOM-JUDGE-RULES reply with JSON"), 0o644)
+	trustProjectMods(t)
 
 	var sawPrompt string
 	p := promptSpy{saw: &sawPrompt, reply: `{"done": true, "blocked": false, "reason": "ok"}`}

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mike-diff/sesh/agent"
 )
@@ -630,5 +631,196 @@ func TestOpenAIReasoningEffort(t *testing.T) {
 	}
 	if got := send("high")["reasoning_effort"]; got != "high" {
 		t.Fatalf("effort must pass through, got %v", got)
+	}
+}
+
+// TestAnthropicReplaysAdaptiveThinking: a model that thinks without a budget
+// still gets its own signed blocks back on the final assistant turn, and a
+// different model's blocks never go back (their signatures are not valid for
+// it). Breakers: restore the budget-only replay and the first assertion
+// fails; drop the model filter and the second does.
+func TestAnthropicReplaysAdaptiveThinking(t *testing.T) {
+	send := func(blockModel string) []any {
+		var body map[string]any
+		srv := sseServer(t, &body, &http.Header{},
+			`{"type":"message_start","message":{"usage":{"input_tokens":3}}}`, `{"type":"message_stop"}`)
+		defer srv.Close()
+		p := Anthropic{BaseURL: srv.URL, Model: "m-adapt"}
+		hist := []agent.Turn{
+			{Role: "user", Text: "q"},
+			{Role: "assistant", Thinking: []agent.ThinkingBlock{{Text: "ponder", Signature: "sig1", Model: blockModel}},
+				Calls: []agent.ToolCall{{ID: "t1", Name: "read", Args: []byte(`{}`)}}},
+			{Role: "tool", Results: []agent.ToolResult{{ID: "t1", Content: "data"}}},
+		}
+		if _, err := p.Chat(context.Background(), "s", hist, nil, func(string) {}, func(string) {}); err != nil {
+			t.Fatal(err)
+		}
+		msgs := body["messages"].([]any)
+		return msgs[1].(map[string]any)["content"].([]any)
+	}
+	if first := send("m-adapt")[0].(map[string]any); first["type"] != "thinking" || first["signature"] != "sig1" {
+		t.Fatalf("own adaptive thinking must lead the assistant turn, got %v", first)
+	}
+	if first := send("m-other")[0].(map[string]any); first["type"] == "thinking" {
+		t.Fatalf("another model's thinking must not be replayed: %v", first)
+	}
+}
+
+// TestOpenAIReasoningRoundTrip: streamed reasoning is kept, labeled with the
+// model, and sent back as reasoning_content on later calls to that model, but
+// not to another one. Breakers: stop accumulating reasoning and the capture
+// fails; skip the replay and the second check fails; drop the model filter
+// and the third does.
+func TestOpenAIReasoningRoundTrip(t *testing.T) {
+	var body map[string]any
+	srv := sseServer(t, &body, &http.Header{},
+		`{"choices":[{"delta":{"reasoning_content":"step one, "}}]}`,
+		`{"choices":[{"delta":{"reasoning":"step two"}}]}`,
+		`{"choices":[{"delta":{"content":"ok"}}]}`)
+	defer srv.Close()
+	p := OpenAI{BaseURL: srv.URL, Model: "m-r"}
+	reply, err := p.Chat(context.Background(), "s", []agent.Turn{{Role: "user", Text: "x"}}, nil, func(string) {}, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reply.Thinking) != 1 || reply.Thinking[0].Text != "step one, step two" || reply.Thinking[0].Model != "m-r" {
+		t.Fatalf("reasoning must be captured for replay: %+v", reply.Thinking)
+	}
+	hist := []agent.Turn{{Role: "user", Text: "x"}, {Role: "assistant", Text: "ok", Thinking: reply.Thinking}, {Role: "user", Text: "y"}}
+	assistant := func(p OpenAI) map[string]any {
+		if _, err := p.Chat(context.Background(), "s", hist, nil, func(string) {}, func(string) {}); err != nil {
+			t.Fatal(err)
+		}
+		return body["messages"].([]any)[2].(map[string]any) // system, user, assistant
+	}
+	if got := assistant(p)["reasoning_content"]; got != "step one, step two" {
+		t.Fatalf("own reasoning must go back as reasoning_content, got %v", got)
+	}
+	p.Model = "m-other"
+	if got, ok := assistant(p)["reasoning_content"]; ok {
+		t.Fatalf("another model's reasoning must be dropped, got %v", got)
+	}
+}
+
+// TestTruncatedCallKeepsHistoryMarshalable: a tool call cut off mid-arguments
+// (the reply hit max_tokens) must come back as valid JSON, and the next request
+// carrying that history must still be sent, with the call's input as {}.
+// Breakers: keep the raw fragment and the next Chat fails to marshal its body;
+// send the wrapped string as input and the input assertion fails.
+func TestTruncatedCallKeepsHistoryMarshalable(t *testing.T) {
+	var body map[string]any
+	srv := sseServer(t, &body, &http.Header{},
+		`{"type":"message_start","message":{"usage":{"input_tokens":3}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu1","name":"write"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\": \"a.go\", \"cont"}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":9}}`)
+	defer srv.Close()
+	p := Anthropic{BaseURL: srv.URL, Model: "m"}
+	reply, err := p.Chat(context.Background(), "s", []agent.Turn{{Role: "user", Text: "x"}}, nil, func(string) {}, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reply.Calls) != 1 || !json.Valid(reply.Calls[0].Args) {
+		t.Fatalf("a cut-off call must still carry valid JSON: %+v", reply.Calls)
+	}
+	hist := []agent.Turn{{Role: "user", Text: "x"},
+		{Role: "assistant", Calls: reply.Calls},
+		{Role: "tool", Results: []agent.ToolResult{{ID: "tu1", Content: "incomplete", IsError: true}}}}
+	if _, err := p.Chat(context.Background(), "s", hist, nil, func(string) {}, func(string) {}); err != nil {
+		t.Fatalf("history with a cut-off call must still send: %v", err)
+	}
+	use := body["messages"].([]any)[1].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if in, ok := use["input"].(map[string]any); !ok || len(in) != 0 {
+		t.Fatalf("a cut-off call must replay with an empty object input, got %v", use["input"])
+	}
+}
+
+// TestAnthropicCacheWriteEffortTTL: cache writes are counted, effort reaches
+// output_config, and a cache TTL rides on the cache breakpoints. Breakers:
+// drop any one of the three and its assertion fails.
+func TestAnthropicCacheWriteEffortTTL(t *testing.T) {
+	var body map[string]any
+	srv := sseServer(t, &body, &http.Header{},
+		`{"type":"message_start","message":{"usage":{"input_tokens":3,"cache_read_input_tokens":40,"cache_creation_input_tokens":12}}}`,
+		`{"type":"message_stop"}`)
+	defer srv.Close()
+	p := Anthropic{BaseURL: srv.URL, Model: "m", Effort: "low", CacheTTL: "1h"}
+	reply, err := p.Chat(context.Background(), "s", []agent.Turn{{Role: "user", Text: "x"}}, nil, func(string) {}, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply.Usage.CacheWrite != 12 || reply.Usage.CacheRead != 40 {
+		t.Fatalf("usage: %+v", reply.Usage)
+	}
+	if oc, _ := body["output_config"].(map[string]any); oc["effort"] != "low" {
+		t.Fatalf("effort must reach output_config: %v", body["output_config"])
+	}
+	sys := body["system"].([]any)[0].(map[string]any)["cache_control"].(map[string]any)
+	if sys["ttl"] != "1h" {
+		t.Fatalf("cache ttl must ride on the breakpoint: %v", sys)
+	}
+}
+
+// TestRetryUnseenStream: a stream that fails after a 200 but before showing
+// anything is retried once; one that already rendered text is not, since the
+// user would read it twice. Breakers: remove the retry and the first case
+// errors; retry regardless and the second case makes two requests.
+func TestRetryUnseenStream(t *testing.T) {
+	serve := func(first string) (*httptest.Server, *int) {
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			w.Header().Set("Content-Type", "text/event-stream")
+			if calls == 1 {
+				fmt.Fprint(w, first)
+				return
+			}
+			fmt.Fprint(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"fine\"}}\n\n")
+		}))
+		return srv, &calls
+	}
+	overloaded := "data: {\"type\":\"error\",\"error\":{\"message\":\"Overloaded\"}}\n\n"
+
+	srv, calls := serve(overloaded)
+	reply, err := Anthropic{BaseURL: srv.URL, Model: "m"}.Chat(context.Background(), "s",
+		[]agent.Turn{{Role: "user", Text: "x"}}, nil, func(string) {}, func(string) {})
+	srv.Close()
+	if err != nil || reply.Text != "fine" || *calls != 2 {
+		t.Fatalf("unseen failure must retry once: reply=%q err=%v calls=%d", reply.Text, err, *calls)
+	}
+
+	srv, calls = serve("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"half\"}}\n\n" + overloaded)
+	_, err = Anthropic{BaseURL: srv.URL, Model: "m"}.Chat(context.Background(), "s",
+		[]agent.Turn{{Role: "user", Text: "x"}}, nil, func(string) {}, func(string) {})
+	srv.Close()
+	if err == nil || *calls != 1 {
+		t.Fatalf("a failure after visible text must not retry: err=%v calls=%d", err, *calls)
+	}
+}
+
+// TestStreamIdleFails: a stream that goes silent fails with the idle error
+// instead of waiting forever, and is not mistaken for a user cancel.
+// Breaker: drop the idle body and the call returns only when the server
+// gives up, with no error.
+func TestStreamIdleFails(t *testing.T) {
+	old := streamIdle
+	streamIdle = 50 * time.Millisecond
+	defer func() { streamIdle = old }()
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	_, err := OpenAI{BaseURL: srv.URL, Model: "m"}.Chat(context.Background(), "s",
+		[]agent.Turn{{Role: "user", Text: "x"}}, nil, func(string) {}, func(string) {})
+	if !errors.Is(err, errStreamIdle) || errors.Is(err, context.Canceled) {
+		t.Fatalf("a silent stream must fail with the idle error, got %v", err)
 	}
 }

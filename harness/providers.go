@@ -19,7 +19,9 @@ import (
 
 // Profile is one named provider. The key may be inline (key) or, preferably,
 // the name of an env var that holds it (key_env), which keeps the secret out of
-// the file so a project providers.json is safe to commit. Context is the
+// the file so a project providers.json is safe to commit. A project file is
+// used only once the user trusts it (see trust.go): its profile can repoint
+// the URL that a stored key is sent to. Context is the
 // model's context window in tokens; when set, the harness tracks context
 // pressure and hands off near the limit (pressure management is not optional;
 // the tuning.json dials move its thresholds).
@@ -46,6 +48,16 @@ type Profile struct {
 	// ReasoningEffort passes a hint like "low" or "high" to openai-protocol
 	// servers that support one. Empty sends nothing.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// Effort ("low" through "max") is the protocol-neutral spend dial: the
+	// anthropic adapter sends it as output_config.effort, the openai ones as
+	// their reasoning effort (reasoning_effort, when set, wins there). Empty
+	// leaves the model's own default. Models that think adaptively reject
+	// thinking_budget; this is their dial.
+	Effort string `json:"effort,omitempty"`
+	// CacheTTL sets the anthropic prompt-cache lifetime ("5m" or "1h"). Empty
+	// keeps the API default. A longer one costs more to write and survives
+	// longer pauses between turns.
+	CacheTTL string `json:"cache_ttl,omitempty"`
 	// Vision is the tri-state override for whether this profile's model can see
 	// images: nil leaves it to the model-name heuristic, true or false forces it.
 	// It is the escape hatch named in the paste-blocked guidance.
@@ -123,10 +135,22 @@ type brainDials struct {
 	maxTokens       int    // profile output cap; 0 = the protocol's own default
 	thinkingBudget  int    // anthropic extended-thinking budget; 0 = off
 	reasoningEffort string // openai reasoning-effort hint; "" = not sent
+	effort          string // protocol-neutral effort; "" = not sent
+	cacheTTL        string // anthropic prompt-cache lifetime; "" = API default
 }
 
 func (p Profile) dials() brainDials {
-	return brainDials{maxTokens: p.MaxTokens, thinkingBudget: p.ThinkingBudget, reasoningEffort: p.ReasoningEffort}
+	return brainDials{maxTokens: p.MaxTokens, thinkingBudget: p.ThinkingBudget, reasoningEffort: p.ReasoningEffort,
+		effort: p.Effort, cacheTTL: p.CacheTTL}
+}
+
+// openaiEffort is the effort an openai-protocol adapter sends: the
+// protocol-specific hint when set, otherwise the neutral dial.
+func (d brainDials) openaiEffort() string {
+	if d.reasoningEffort != "" {
+		return d.reasoningEffort
+	}
+	return d.effort
 }
 
 // selection carries the raw command-line choice into resolveSpec. explicit
@@ -207,8 +231,11 @@ func loadProviders() ProvidersConfig {
 	cfg := ProvidersConfig{Providers: map[string]Profile{}}
 	for _, p := range []string{
 		providersPath(),        // global
-		".sesh/providers.json", // project overlay
+		".sesh/providers.json", // project overlay, once trusted
 	} {
+		if p == ".sesh/providers.json" && !projectModsOK() {
+			continue
+		}
 		b, err := os.ReadFile(p)
 		if err != nil {
 			continue

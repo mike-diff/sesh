@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mike-diff/sesh/agent"
+	"github.com/mike-diff/sesh/provider"
 )
 
 func TestProvidersResolve(t *testing.T) {
@@ -182,5 +183,32 @@ func TestResolveSpecCarriesBrainDials(t *testing.T) {
 		explicit: map[string]bool{"provider": true}}, nil, cfg, nil)
 	if s.reasoningEffort != "high" || s.maxTokens != 0 {
 		t.Fatalf("openai dials lost: %+v", s.brainDials)
+	}
+}
+
+// TestBuildProviderEffortAndProtocols: the neutral effort dial reaches every
+// adapter in its own field (with reasoning_effort winning on the openai
+// protocols), the cache TTL reaches anthropic, and "responses" builds the
+// Responses adapter. Breakers: drop any mapping or the protocol case and the
+// matching assertion fails.
+func TestBuildProviderEffortAndProtocols(t *testing.T) {
+	d := Profile{Effort: "low", CacheTTL: "1h"}.dials()
+	a, err := buildProvider("anthropic", "http://x", "m", "k", "", d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := a.(provider.Anthropic); got.Effort != "low" || got.CacheTTL != "1h" {
+		t.Fatalf("anthropic: %+v", got)
+	}
+	o, _ := buildProvider("openai", "http://x", "m", "k", "", d)
+	if got := o.(provider.OpenAI); got.ReasoningEffort != "low" {
+		t.Fatalf("openai must fall back to the neutral effort: %+v", got)
+	}
+	r, err := buildProvider("responses", "http://x", "m", "k", "", Profile{Effort: "low", ReasoningEffort: "high"}.dials())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := r.(provider.Responses); !ok || got.Effort != "high" {
+		t.Fatalf("responses must build its adapter with reasoning_effort winning: %#v", r)
 	}
 }
