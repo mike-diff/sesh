@@ -482,7 +482,7 @@ func (m *procManager) doBash(ctx context.Context, command string) (string, bool)
 		out := m.foregroundOutput(p)
 		m.drop(p)
 		if werr != nil {
-			return strings.TrimSpace(out + "\n" + werr.Error()), true
+			return annotateExit(command, strings.TrimSpace(out+"\n"+werr.Error()), werr), true
 		}
 		if out == "" {
 			return "(no output)", false
