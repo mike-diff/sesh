@@ -181,6 +181,10 @@ ciphertext, useless off this machine. That protects against incidental leakage,
 not against an agent that reads both files locally, so the built-in `read` and
 `search` tools also refuse the `~/.sesh` directory (see `underSeshDir`).
 `bash` remains a hole by nature; the encryption is the backstop if a key escapes.
+Tool output from `bash`, the engines, and tool mods is masked for secret-looking
+assignments and well-known token shapes before the model or the spill file sees
+it (`mask.go`, `result_mask_off` to disable), which narrows the hole without
+closing it.
 Resolution order: a profile's inline `key`, then `credentials.json` by provider
 name, then `key_env`, then the conventional env var.
 

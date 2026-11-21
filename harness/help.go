@@ -104,7 +104,8 @@ once approved at startup, or with -trust, and only while unchanged)
                                max_procs, proc_log_tail, update_check,
                                input_max_rows, brief_provider, brief_model,
                                judge_provider, judge_model, result_max_chars,
-                               result_head_pct, result_spill_off, result_keep_days,
+                               result_head_pct, result_spill_off,
+                               result_mask_off, result_keep_days,
                                transcript_result, project_context_max (state
                                only what you change)
   tools/<name>                 executables that become agent tools (global

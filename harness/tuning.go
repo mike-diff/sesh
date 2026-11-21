@@ -145,6 +145,12 @@ type Tuning struct {
 	// from the git root down to the working directory. Default 32768. The
 	// nearest files win the budget; farther ones are dropped, loudly.
 	ProjectContextMax int `json:"project_context_max,omitempty"`
+	// ResultMaskOff drops secret masking of tool output (values under
+	// sensitive-looking keys, plus well-known credential token shapes, replaced
+	// with [redacted] before the shaped copy or the spill file is kept). Default
+	// off, so masking is on. Inverted so the zero value keeps the default, like
+	// every dial.
+	ResultMaskOff bool `json:"result_mask_off,omitempty"`
 }
 
 func defaultTuning() Tuning {
@@ -285,6 +291,9 @@ func overlayTuning(t *Tuning, got Tuning) {
 	}
 	if got.ResultSpillOff {
 		t.ResultSpillOff = true
+	}
+	if got.ResultMaskOff {
+		t.ResultMaskOff = true
 	}
 	if got.UpdateCheck {
 		t.UpdateCheck = true
