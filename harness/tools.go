@@ -288,7 +288,7 @@ func confineWrite(path string, unsafe bool) string {
 	}
 	for _, p := range parts {
 		if p == ".git" {
-			return "refusing to write inside .git: its hooks and config run code on the next git command; use git itself through bash"
+			return "refusing to write inside .git: its hooks and config run code on the next git command, so the user changes them; tell the user what to change rather than writing it another way (git commands themselves are fine)"
 		}
 	}
 	return ""
