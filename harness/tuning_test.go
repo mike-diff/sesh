@@ -209,3 +209,16 @@ func TestShippedTuningExampleParses(t *testing.T) {
 		t.Fatalf("the example's active block must restate the defaults, not change them: %+v", merged)
 	}
 }
+
+// TestTuningMaskOffOverlays: result_mask_off in tuning.json reaches the live
+// dial. Breaker: drop the ResultMaskOff setter from overlayTuning.
+func TestTuningMaskOffOverlays(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	chtmp(t)
+	os.MkdirAll(filepath.Join(home, ".sesh"), 0o755)
+	os.WriteFile(filepath.Join(home, ".sesh", "tuning.json"), []byte(`{"result_mask_off": true}`), 0o644)
+	if !loadTuning().ResultMaskOff {
+		t.Fatal("result_mask_off from tuning.json was not applied")
+	}
+}
