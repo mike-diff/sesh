@@ -63,7 +63,7 @@ func Main() {
 	providerName := flag.String("provider", "", "named provider profile from providers.json")
 	resume := flag.String("resume", "", "resume a session by id")
 	fork := flag.String("fork", "", "branch a new session from an existing one by id")
-	cont := flag.Bool("continue", false, "resume the most recent session")
+	cont := flag.Bool("continue", false, "resume the most recent session in this directory, or start one")
 	list := flag.Bool("list", false, "list saved sessions and exit")
 	autoYes := flag.Bool("yes", false, "allow mutation in print mode; interactively, silences -ask")
 	ask := flag.Bool("ask", false, "prompt for approval before each write/edit/bash call")
@@ -135,7 +135,10 @@ func Main() {
 	case *cont:
 		cwd, _ := os.Getwd()
 		if sess, err = latestSession(cwd); err != nil {
-			fail(err)
+			// Nothing to continue starts one, so a script can open every
+			// call with -continue and get a single persisted session.
+			fmt.Fprintf(os.Stderr, "%snote: %v; starting a fresh session%s\n", yellow, err, reset)
+			sess = &Session{ID: newSessionID(), Cwd: cwd, Created: time.Now()}
 		}
 	default:
 		cwd, _ := os.Getwd()

@@ -39,7 +39,8 @@ CONTINUITY (infinite sessions)
   a chained successor continues it, seeded with a fresh-context brief, the
   chain ledger, repo state from git, and the latest turns verbatim. Archived
   links stay searchable via the recall tool; /chain shows the whole chain.
-  -continue resumes the newest unsealed session for this directory; -resume on
+  -continue resumes the newest unsealed session for this directory (starting
+  one when there is none, so scripted -p calls share a session); -resume on
   a sealed session lands on its chain tip. One live instance per session
   (pid locks); concurrent -continue falls back to a fresh session.
 

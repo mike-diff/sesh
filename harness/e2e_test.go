@@ -754,6 +754,25 @@ func TestE2E(t *testing.T) {
 	// exit switch and PrintExitBlocked sees 0, not 2; return driveBlocked on
 	// judge transport failure (the old conflation) and PrintExitJudgeFail
 	// sees 2, not 1.
+	// A first -continue with nothing to resume must start a persisted session
+	// that the next -continue picks up. Breaker: restore fail(err) when
+	// latestSession finds nothing, and the first run exits 1.
+	t.Run("ContinueStartsFreshSession", func(t *testing.T) {
+		m, dir := newRig(t,
+			[]e2eStep{eTool("write", `{"path":"a.txt","content":"a"}`), eText("wrote a.txt")},
+			[]e2eStep{verdictJSON("a.txt exists")})
+		if code, _, errb := m.runCode(t, dir, "write a.txt", "-continue"); code != 0 {
+			t.Fatalf("first -continue must start a session, exit %d: %s", code, errb)
+		}
+		m.reset([]e2eStep{eTool("write", `{"path":"b.txt","content":"b"}`), eText("wrote b.txt")},
+			[]e2eStep{verdictJSON("b.txt exists")})
+		if code, _, errb := m.runCode(t, dir, "write b.txt", "-continue"); code != 0 {
+			t.Fatalf("second -continue: exit %d: %s", code, errb)
+		}
+		if saved := savedSessionText(t, m.homeDir); !strings.Contains(saved, "write a.txt") || !strings.Contains(saved, "write b.txt") {
+			t.Fatal("both -continue runs must land in one saved session")
+		}
+	})
 	t.Run("PrintExitDone", func(t *testing.T) {
 		m, dir := newRig(t,
 			[]e2eStep{eTool("write", `{"path":"x.txt","content":"hi"}`), eText("wrote x.txt")},
