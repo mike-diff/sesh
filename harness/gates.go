@@ -105,8 +105,9 @@ type gateInfo struct {
 	Cwd  string          `json:"cwd"`
 }
 
-// findGateMod resolves the executable gate mod: project, then global, then
-// none. Resolved once per session, like the system prompt.
+// findGateMod resolves the gate mod: project, then global, then none. A gate
+// file counts whether or not it is executable, so a missing exec bit denies
+// (in runGateMod) instead of silently disabling the boundary.
 func findGateMod() string {
 	for _, p := range []string{
 		".sesh/gate", // project, once trusted
@@ -115,7 +116,7 @@ func findGateMod() string {
 		if p == ".sesh/gate" && !projectModsOK() {
 			continue
 		}
-		if fi, err := os.Stat(p); err == nil && fi.Mode()&0o111 != 0 {
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
 			return p
 		}
 	}
@@ -139,6 +140,9 @@ func runGateMod(tc agent.ToolCall) error {
 	mod := findGateMod()
 	if mod == "" {
 		return nil
+	}
+	if fi, err := os.Stat(mod); err != nil || fi.Mode()&0o111 == 0 {
+		return fmt.Errorf("the gate mod %s is not executable, so %s is refused; ask the user to chmod +x it or remove it", mod, tc.Name)
 	}
 	cwd, _ := os.Getwd()
 	b, err := json.Marshal(gateInfo{Tool: tc.Name, Args: tc.Args, Cwd: cwd})

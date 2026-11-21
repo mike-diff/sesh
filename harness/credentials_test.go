@@ -2,6 +2,7 @@ package harness
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -69,15 +70,63 @@ func TestCredentialsEncryptedAtRest(t *testing.T) {
 		}
 	}
 
-	// delete reports presence and actually removes
-	if ok, err := deleteCredential("remote"); err != nil || !ok {
-		t.Fatalf("delete present: ok=%v err=%v", ok, err)
+	if err := deleteCredential("remote"); err != nil {
+		t.Fatal(err)
 	}
 	if _, present := loadCredentials()["remote"]; present {
-		t.Fatal("zai should be gone after delete")
+		t.Fatal("remote should be gone after delete")
 	}
-	if ok, _ := deleteCredential("missing"); ok {
-		t.Fatal("deleting a missing key should report false")
+	if err := deleteCredential("missing"); err != nil {
+		t.Fatalf("deleting a missing key is not an error: %v", err)
+	}
+}
+
+// TestCredentialWritesNeverDropUnreadKeys: a save must not lose what it could
+// not read. An entry this run cannot decrypt survives as its ciphertext, and a
+// file that does not parse is refused, not overwritten. Breakers: rebuild the
+// saved set from loadCredentials (the undecryptable entry vanishes); ignore
+// the parse error (the malformed file is replaced).
+func TestCredentialWritesNeverDropUnreadKeys(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	os.MkdirAll(filepath.Dir(credentialsPath()), 0o700)
+	os.WriteFile(credentialsPath(), []byte(`{"other": "v1:not-decryptable"}`), 0o600)
+	if err := saveCredential("new", "k"); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(credentialsPath())
+	if !strings.Contains(string(raw), "v1:not-decryptable") {
+		t.Fatalf("an unreadable entry was dropped on save: %s", raw)
+	}
+	if loadCredentials()["new"] != "k" {
+		t.Fatal("the new key was not saved")
+	}
+
+	os.WriteFile(credentialsPath(), []byte("{not json"), 0o600)
+	if err := saveCredential("new", "k2"); err == nil {
+		t.Fatal("saving over a malformed credentials file must fail")
+	}
+	if err := deleteCredential("new"); err == nil {
+		t.Fatal("deleting from a malformed credentials file must fail")
+	}
+	if raw, _ := os.ReadFile(credentialsPath()); string(raw) != "{not json" {
+		t.Fatalf("the malformed file was overwritten: %q", raw)
+	}
+}
+
+// TestMasterKeyRefusesDamagedKey: a key file that exists but does not decode
+// is an error, never silently replaced (a new key would orphan every stored
+// credential). Breaker: fall through to key generation when decoding fails.
+func TestMasterKeyRefusesDamagedKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := saveCredential("remote", "sk-1"); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(keyPath(), []byte("damaged"), 0o600)
+	if err := saveCredential("other", "sk-2"); err == nil {
+		t.Fatal("a damaged master key must make saves fail")
+	}
+	if b, _ := os.ReadFile(keyPath()); string(b) != "damaged" {
+		t.Fatal("the damaged key file was replaced")
 	}
 }
 

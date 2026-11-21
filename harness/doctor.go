@@ -215,7 +215,8 @@ func runDoctor() int {
 		failD("%s: not writable", sessionsDir())
 	} else {
 		os.Remove(probe)
-		pass("%s: writable, %d sessions", sessionsDir(), len(allSessions()))
+		sessions, _ := allSessions()
+		pass("%s: writable, %d sessions", sessionsDir(), len(sessions))
 	}
 
 	// Spilled output is the one mount point that grows on its own, so doctor

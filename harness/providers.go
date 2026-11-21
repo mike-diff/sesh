@@ -252,15 +252,24 @@ func loadProviders() ProvidersConfig {
 // loadGlobalProviders reads only the global file, the one /provider add and
 // /provider remove write back to. (The project overlay, if any, is read-only
 // from the harness's point of view.)
-func loadGlobalProviders() ProvidersConfig {
+func loadGlobalProviders() (ProvidersConfig, error) {
 	cfg := ProvidersConfig{Providers: map[string]Profile{}}
-	if b, err := os.ReadFile(providersPath()); err == nil {
-		json.Unmarshal(b, &cfg)
-		if cfg.Providers == nil {
-			cfg.Providers = map[string]Profile{}
-		}
+	b, err := os.ReadFile(providersPath())
+	if os.IsNotExist(err) {
+		return cfg, nil
 	}
-	return cfg
+	if err != nil {
+		return cfg, err
+	}
+	// A file that does not parse must never be saved over: that would replace
+	// the user's providers with whatever partial config survived the parse.
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return cfg, fmt.Errorf("%s is not valid JSON (%v); fix it before changing providers", providersPath(), err)
+	}
+	if cfg.Providers == nil {
+		cfg.Providers = map[string]Profile{}
+	}
+	return cfg, nil
 }
 
 // saveGlobalProviders writes the global providers.json atomically. It holds no

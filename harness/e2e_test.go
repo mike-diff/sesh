@@ -773,6 +773,19 @@ func TestE2E(t *testing.T) {
 			t.Fatal("both -continue runs must land in one saved session")
 		}
 	})
+	// A tied print run that cannot save its session says so on stderr.
+	// Breaker: drop the error check in warnUnsaved.
+	t.Run("PrintReportsUnsavedSession", func(t *testing.T) {
+		m, dir := newRig(t,
+			[]e2eStep{eText("hello again")},
+			[]e2eStep{verdictJSON("answered")})
+		m.seedSession(t, dir)
+		os.MkdirAll(filepath.Join(m.homeDir, ".sesh", "sessions", "20260101-000000-00000001.json.tmp"), 0o755)
+		_, _, errb := m.runCode(t, dir, "say hello", "-continue")
+		if !strings.Contains(errb, "could not save session") {
+			t.Fatalf("an unsaved tied session must be reported: %s", errb)
+		}
+	})
 	t.Run("PrintExitDone", func(t *testing.T) {
 		m, dir := newRig(t,
 			[]e2eStep{eTool("write", `{"path":"x.txt","content":"hi"}`), eText("wrote x.txt")},

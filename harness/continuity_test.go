@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -276,6 +277,30 @@ func TestRenderTranscriptNotesImages(t *testing.T) {
 	for _, want := range []string{"USER: compare these", "2 image(s)", "image/png 1456x819", "image/jpeg 800x600"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("transcript missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestReplHandoffReportsLostWrites: a handoff whose chain record or seal
+// cannot be written says so instead of continuing silently. Breakers: drop
+// either error check in handoff, and its notice is missing.
+func TestReplHandoffReportsLostWrites(t *testing.T) {
+	r := newTestRepl(t)
+	r.p = fakeChat{text: "1. Task: build it\nLEDGER: Did the thing."}
+	r.sess.Cwd = "/w"
+	r.history = turnsOf("u1", "a1", "u2", "a2", "u3", "a3")
+	r.sess.Turns = r.history
+	os.MkdirAll(filepath.Dir(chainsDir()), 0o755)
+	os.WriteFile(chainsDir(), nil, 0o644) // a file where the ledger dir goes
+	os.MkdirAll(filepath.Join(sessionsDir(), r.sess.ID+".json.tmp"), 0o755)
+	var notes strings.Builder
+	oldConsole := activeConsole
+	defer func() { activeConsole = oldConsole }()
+	activeConsole = &plainConsole{out: &notes}
+	r.handoff()
+	for _, want := range []string{"could not record the handoff", "could not seal session"} {
+		if !strings.Contains(notes.String(), want) {
+			t.Fatalf("missing %q in:\n%s", want, notes.String())
 		}
 	}
 }

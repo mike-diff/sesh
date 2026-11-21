@@ -285,22 +285,27 @@ func chainTip(s *Session) (*Session, int) {
 	return s, hops
 }
 
-func allSessions() []*Session {
+// allSessions returns every loadable session, newest first. complete is false
+// when the directory or any session file could not be read, so a caller that
+// acts on what the set does not contain (blob GC) can refuse to.
+func allSessions() (out []*Session, complete bool) {
 	entries, err := os.ReadDir(sessionsDir())
 	if err != nil {
-		return nil
+		return nil, os.IsNotExist(err)
 	}
-	var out []*Session
+	complete = true
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
 		if s, err := loadSession(strings.TrimSuffix(e.Name(), ".json")); err == nil {
 			out = append(out, s)
+		} else {
+			complete = false
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Updated.After(out[j].Updated) })
-	return out
+	return out, complete
 }
 
 // latestSession returns the most recent session recorded in cwd, so -continue
@@ -348,7 +353,7 @@ func lastBrain(cwd string) *Session {
 }
 
 func printSessions() {
-	sessions := allSessions()
+	sessions, _ := allSessions()
 	if len(sessions) == 0 {
 		fmt.Printf("no sessions yet (they autosave to %s)\n", sessionsDir())
 		return

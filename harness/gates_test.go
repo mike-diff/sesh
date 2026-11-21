@@ -3,6 +3,7 @@ package harness
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mike-diff/sesh/agent"
@@ -28,5 +29,20 @@ func TestGateModResolvesPerCall(t *testing.T) {
 	os.WriteFile(filepath.Join(global, "gate"), []byte("#!/bin/sh\nexit 1\n"), 0o755)
 	if err := g(call); err == nil {
 		t.Fatal("a gate mod installed mid-session must deny the next call")
+	}
+}
+
+// TestGateModWithoutExecBitDenies: a gate file the user forgot to chmod must
+// refuse mutation, not vanish (the "fails closed" contract). Breaker: require
+// the exec bit in findGateMod again, and the allow-everything gate is back.
+func TestGateModWithoutExecBitDenies(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	chtmp(t)
+	global := filepath.Join(os.Getenv("HOME"), ".sesh")
+	os.MkdirAll(global, 0o755)
+	os.WriteFile(filepath.Join(global, "gate"), []byte("#!/bin/sh\nexit 0\n"), 0o644)
+	err := gate(&plainConsole{}, false)(agent.ToolCall{Name: "write", Args: []byte(`{"path":"x","content":"y"}`)})
+	if err == nil || !strings.Contains(err.Error(), "not executable") {
+		t.Fatalf("a non-executable gate mod must deny with the reason: %v", err)
 	}
 }
