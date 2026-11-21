@@ -368,8 +368,9 @@ func (r *repl) contextCmd(arg string) {
 	r.ctxLimit = capWindow(n)
 	r.assumedCtx = false
 	if r.current != "" { // persist on the active profile so it survives restarts
-		g := loadGlobalProviders()
-		if prof, ok := g.Providers[r.current]; ok {
+		if g, err := loadGlobalProviders(); err != nil {
+			emit("%s  not persisted: %v%s\n", red, err, reset)
+		} else if prof, ok := g.Providers[r.current]; ok {
 			prof.Context = n
 			g.Providers[r.current] = prof
 			saveGlobalProviders(g)
@@ -741,7 +742,11 @@ func (r *repl) providerAdd() {
 	}
 
 	// Persist the provider definition (global) and the encrypted key.
-	g := loadGlobalProviders()
+	g, err := loadGlobalProviders()
+	if err != nil {
+		emit("%s  %v%s\n\n", red, err, reset)
+		return
+	}
 	if _, exists := g.Providers[name]; exists {
 		emit("%s  updating existing provider %q%s\n", dim, name, reset)
 	}
@@ -771,7 +776,11 @@ func (r *repl) providerRemove(name string) {
 		emit("%s  usage: /provider remove <name>%s\n\n", red, reset)
 		return
 	}
-	g := loadGlobalProviders()
+	g, err := loadGlobalProviders()
+	if err != nil {
+		emit("%s  %v%s\n\n", red, err, reset)
+		return
+	}
 	if _, ok := g.Providers[name]; !ok {
 		emit("%s  no provider named %q%s\n\n", red, name, reset)
 		return
@@ -788,7 +797,9 @@ func (r *repl) providerRemove(name string) {
 		emit("%s  %v%s\n\n", red, err, reset)
 		return
 	}
-	deleteCredential(name)
+	if err := deleteCredential(name); err != nil {
+		emit("%s  removed %q but not its key: %v%s\n", red, name, err, reset)
+	}
 	delete(r.creds, name)
 	r.pcfg = loadProviders()
 	note := ""
@@ -849,9 +860,9 @@ func stickyModel(name, model string) {
 	if name == "" {
 		return
 	}
-	g := loadGlobalProviders()
+	g, err := loadGlobalProviders()
 	prof, ok := g.Providers[name]
-	if !ok || prof.Model == model {
+	if err != nil || !ok || prof.Model == model {
 		return
 	}
 	prof.Model = model
@@ -933,8 +944,9 @@ func (r *repl) modelCmd(m string) {
 // (persisted, so it survives restarts and stays in /model), then switches to it.
 func (r *repl) setCustomModel(model string) {
 	if r.current != "" {
-		g := loadGlobalProviders()
-		if prof, ok := g.Providers[r.current]; ok {
+		if g, err := loadGlobalProviders(); err != nil {
+			emit("%s  not persisted: %v%s\n", red, err, reset)
+		} else if prof, ok := g.Providers[r.current]; ok {
 			prof.CustomModel = model
 			g.Providers[r.current] = prof
 			saveGlobalProviders(g)
@@ -1094,17 +1106,21 @@ func (r *repl) handoff() bool {
 	}
 	// The chain record lands before the seal: the ledger file is the source
 	// of truth a recovery can replay if the process dies mid-handoff.
-	appendChainRecord(next.Root, chainRecord{
+	if err := appendChainRecord(next.Root, chainRecord{
 		Time: time.Now(), From: r.sess.ID, To: next.ID, Entry: entry,
 		CtxTokens: r.ctxTokens, BriefIn: used.Input, BriefOut: used.Output,
 		CachedIn: used.CacheRead,
-	})
+	}); err != nil {
+		emit("%s  could not record the handoff in the chain ledger: %v%s\n", red, err, reset)
+	}
 	// Seal the dying session: full transcript plus the forward pointer. A
 	// sealed transcript is what descendants' recall reads, so it must never
 	// grow again; -resume on it follows continued_by to the chain tip.
 	r.sess.Turns = r.history
 	r.sess.Child = next.ID
-	r.sess.save()
+	if err := r.sess.save(); err != nil {
+		emit("%s  could not seal session %s (recall may miss its latest turns): %v%s\n", red, r.sess.ID, err, reset)
+	}
 	prior := r.sess.ID
 	r.sess = next
 	r.history = next.Turns
@@ -1158,13 +1174,17 @@ func (r *repl) compactCmd() {
 		backup := *r.sess
 		backup.ID = r.sess.ID + "-precompact"
 		backup.Title = "pre-compact transcript of " + r.sess.ID
-		if err := backup.save(); err == nil {
-			emit("%s  full transcript kept as session %s%s\n", dim, backup.ID, reset)
+		if err := backup.save(); err != nil {
+			emit("%s  could not keep the full transcript (%v); compaction cancelled%s\n\n", red, err, reset)
+			return
 		}
+		emit("%s  full transcript kept as session %s%s\n", dim, backup.ID, reset)
 	}
 	r.history = compacted
 	r.sess.Turns = r.history
-	r.sess.save()
+	if err := r.sess.save(); err != nil {
+		emit("%s  could not save the compacted session: %v%s\n", red, err, reset)
+	}
 	emit("\n")
 }
 

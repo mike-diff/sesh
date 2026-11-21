@@ -307,7 +307,7 @@ func Main() {
 			if tied && len(out) > mark+1 {
 				r.history = out
 				r.sess.Turns = out
-				r.sess.save()
+				warnUnsaved(r.sess)
 			}
 			if hint := keyHint(err, spec.name); hint != "" {
 				fmt.Fprintf(os.Stderr, "%s\n", strings.TrimSpace(hint))
@@ -320,7 +320,7 @@ func Main() {
 		// otherwise scripted -p calls would litter the session list.
 		if tied {
 			r.sess.Turns = out
-			r.sess.save()
+			warnUnsaved(r.sess)
 			r.managePressure() // a handoff here moves the lock with it
 		}
 		// Goal-driven persistence, same lifecycle as interactive: the request
@@ -678,4 +678,12 @@ func (in *interrupts) resetAbort() {
 	in.mu.Lock()
 	in.aborted = false
 	in.mu.Unlock()
+}
+
+// warnUnsaved saves a print-mode session and says so on stderr when that
+// fails: a tied run exists so the next -continue can resume it.
+func warnUnsaved(s *Session) {
+	if err := s.save(); err != nil {
+		fmt.Fprintf(os.Stderr, "%snote: could not save session %s: %v%s\n", red, s.ID, err, reset)
+	}
 }

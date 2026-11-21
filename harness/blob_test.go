@@ -234,3 +234,24 @@ func TestGCBlobsDeletesOnlyOldOrphans(t *testing.T) {
 		}
 	}
 }
+
+// TestGCBlobsSkipsWhenASessionIsUnreadable: a session file that fails to load
+// may reference any blob, so gc must collect nothing rather than treat its
+// images as orphans. Breaker: ignore allSessions' complete flag, and the aged
+// orphan below is deleted.
+func TestGCBlobsSkipsWhenASessionIsUnreadable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	hash, err := storeBlob([]byte("referenced only by the damaged session"), "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := blobPath(hash, "image/png")
+	aged := time.Now().Add(-2 * blobGCMinAge)
+	os.Chtimes(path, aged, aged)
+	os.MkdirAll(sessionsDir(), 0o755)
+	os.WriteFile(filepath.Join(sessionsDir(), "damaged.json"), []byte("{truncated"), 0o644)
+	gcBlobs()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("gc deleted a blob while a session was unreadable: %v", err)
+	}
+}

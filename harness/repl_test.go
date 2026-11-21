@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -106,7 +108,7 @@ func TestCustomModelPersists(t *testing.T) {
 	if r.model != "my-custom-model" {
 		t.Fatalf("a custom model must become active: %q", r.model)
 	}
-	if got := loadGlobalProviders().Providers["p"].CustomModel; got != "my-custom-model" {
+	if got := globalProviders(t).Providers["p"].CustomModel; got != "my-custom-model" {
 		t.Fatalf("a custom model must persist to the profile: %q", got)
 	}
 	if !slices.Contains(r.modelChoices(), "my-custom-model") {
@@ -114,7 +116,7 @@ func TestCustomModelPersists(t *testing.T) {
 	}
 
 	r.setCustomModel("second") // only one per provider: replaces the first
-	if got := loadGlobalProviders().Providers["p"].CustomModel; got != "second" {
+	if got := globalProviders(t).Providers["p"].CustomModel; got != "second" {
 		t.Fatalf("only one custom model per provider, want \"second\": %q", got)
 	}
 	if slices.Contains(r.modelChoices(), "my-custom-model") {
@@ -262,7 +264,7 @@ func TestReplProviderSwitchAndRemove(t *testing.T) {
 	}
 
 	r.command("/provider remove b")
-	got := loadGlobalProviders()
+	got := globalProviders(t)
 	if _, ok := got.Providers["b"]; ok {
 		t.Fatal("b should be removed from the global config")
 	}
@@ -283,7 +285,7 @@ func TestReplProviderAddWizard(t *testing.T) {
 	if h, _ := r.command("/provider add"); !h {
 		t.Fatal("not handled")
 	}
-	g := loadGlobalProviders()
+	g := globalProviders(t)
 	p, ok := g.Providers["loc"]
 	if !ok || p.Model != "mx" || p.URL != "http://127.0.0.1:0" || p.Protocol != "openai" {
 		t.Fatalf("wizard result: %+v ok=%v", p, ok)
@@ -377,7 +379,7 @@ func TestStickyModel(t *testing.T) {
 	r.current = "a"
 
 	r.command("/model m9")
-	if got := loadGlobalProviders().Providers["a"].Model; got != "m9" {
+	if got := globalProviders(t).Providers["a"].Model; got != "m9" {
 		t.Fatalf("model did not stick to the profile: %q", got)
 	}
 	if r.pcfg.Providers["a"].Model != "m9" {
@@ -387,7 +389,7 @@ func TestStickyModel(t *testing.T) {
 	// ad hoc (no profile name): nothing written
 	r.current = ""
 	r.command("/model m10")
-	if got := loadGlobalProviders().Providers["a"].Model; got != "m9" {
+	if got := globalProviders(t).Providers["a"].Model; got != "m9" {
 		t.Fatalf("ad hoc switch must not touch profiles: %q", got)
 	}
 }
@@ -567,6 +569,24 @@ func TestReplCompactWithoutProvider(t *testing.T) {
 	}
 }
 
+// TestReplCompactKeepsHistoryWhenBackupFails: /compact must not overwrite the
+// live transcript with a summary unless the full one was saved first.
+// Breaker: ignore backup.save's error, and history collapses to the summary.
+func TestReplCompactKeepsHistoryWhenBackupFails(t *testing.T) {
+	r := newTestRepl(t)
+	r.p = fakeChat{text: "THE SUMMARY"}
+	r.history = []agent.Turn{
+		{Role: "user", Text: "a"}, {Role: "assistant", Text: "b"},
+		{Role: "user", Text: "c"}, {Role: "assistant", Text: "d"},
+	}
+	// A directory where the backup's temp file goes makes its save fail.
+	os.MkdirAll(filepath.Join(sessionsDir(), r.sess.ID+"-precompact.json.tmp"), 0o755)
+	r.command("/compact")
+	if len(r.history) != 4 {
+		t.Fatalf("compaction went ahead without a saved backup: %d turns", len(r.history))
+	}
+}
+
 // TestContextCmd: /context sets the window, caps it, persists to the active
 // profile, and enables automatic handoff.
 func TestContextCmd(t *testing.T) {
@@ -579,7 +599,7 @@ func TestContextCmd(t *testing.T) {
 	if r.ctxLimit != 131072 {
 		t.Fatalf("set failed: limit=%d", r.ctxLimit)
 	}
-	saved := loadGlobalProviders().Providers["loc"]
+	saved := globalProviders(t).Providers["loc"]
 	if saved.Context != 131072 {
 		t.Fatalf("not persisted: %+v", saved)
 	}
@@ -732,5 +752,31 @@ func TestRunTurnKeepsCompletedWorkOnError(t *testing.T) {
 	r2.runTurn(context.Background(), "unlucky", nil, agent.Hooks{})
 	if len(r2.history) != mark2 {
 		t.Fatalf("a turn that never started must roll back its user message, got %d extra turns", len(r2.history)-mark2)
+	}
+}
+
+// globalProviders loads the global providers.json, failing the test on a parse error.
+func globalProviders(t *testing.T) ProvidersConfig {
+	t.Helper()
+	g, err := loadGlobalProviders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+
+// TestProvidersFileNeverSavedOverWhenMalformed: a providers.json that does not
+// parse is reported, not rewritten from whatever part of it decoded. Breaker:
+// ignore json.Unmarshal's error in loadGlobalProviders, and /context saves the
+// partial config over the user's file.
+func TestProvidersFileNeverSavedOverWhenMalformed(t *testing.T) {
+	r := newTestRepl(t)
+	r.current = "loc"
+	bad := `{"default": 5, "providers": {"loc": {"protocol": "openai", "model": "m"}}}`
+	os.MkdirAll(filepath.Dir(providersPath()), 0o755)
+	os.WriteFile(providersPath(), []byte(bad), 0o644)
+	r.command("/context 4096")
+	if b, _ := os.ReadFile(providersPath()); string(b) != bad {
+		t.Fatalf("a malformed providers.json was rewritten: %s", b)
 	}
 }

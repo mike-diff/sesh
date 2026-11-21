@@ -89,8 +89,12 @@ const blobGCMinAge = time.Hour
 // the user can no longer resolve) is worse than leaving a small orphan behind, so
 // every error is skipped rather than fatal and recent files are always kept.
 func gcBlobs() {
+	sessions, complete := allSessions()
+	if !complete {
+		return // a session that failed to load may reference any blob: collect nothing
+	}
 	referenced := map[string]bool{}
-	for _, s := range allSessions() {
+	for _, s := range sessions {
 		for _, t := range s.Turns {
 			for _, im := range t.Images {
 				if im.Hash != "" {

@@ -35,10 +35,16 @@ func keyPath() string {
 // masterKey loads the 32-byte AES key, generating and persisting it on first
 // use. It is the one secret the harness keeps; everything else is encrypted.
 func masterKey() ([]byte, error) {
-	if b, err := os.ReadFile(keyPath()); err == nil {
+	b, err := os.ReadFile(keyPath())
+	switch {
+	case err == nil:
 		if key, derr := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b))); derr == nil && len(key) == 32 {
 			return key, nil
 		}
+		// Replacing a damaged key would orphan every stored credential for good.
+		return nil, fmt.Errorf("%s is damaged, so stored keys cannot be decrypted; restore it, or delete it and %s to start over", keyPath(), credentialsPath())
+	case !os.IsNotExist(err):
+		return nil, err
 	}
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
@@ -109,12 +115,8 @@ func decrypt(s string) (string, error) {
 // or unreadable file is an empty set; an entry that fails to decrypt is skipped.
 func loadCredentials() map[string]string {
 	out := map[string]string{}
-	b, err := os.ReadFile(credentialsPath())
+	stored, err := readStored()
 	if err != nil {
-		return out
-	}
-	stored := map[string]string{}
-	if json.Unmarshal(b, &stored) != nil {
 		return out
 	}
 	for name, val := range stored {
@@ -125,20 +127,30 @@ func loadCredentials() map[string]string {
 	return out
 }
 
-// saveCredentials encrypts every key and writes the set atomically at 0600.
-func saveCredentials(m map[string]string) error {
-	enc := map[string]string{}
-	for name, pt := range m {
-		ct, err := encrypt(pt)
-		if err != nil {
-			return err
-		}
-		enc[name] = ct
+// readStored returns the stored set as ciphertext. A missing file is an empty
+// set; one that exists but cannot be read or parsed is an error, so a save
+// never writes over keys it could not see.
+func readStored() (map[string]string, error) {
+	stored := map[string]string{}
+	b, err := os.ReadFile(credentialsPath())
+	if os.IsNotExist(err) {
+		return stored, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(b, &stored); err != nil {
+		return nil, fmt.Errorf("%s is not valid JSON (%v); fix or remove it before changing keys", credentialsPath(), err)
+	}
+	return stored, nil
+}
+
+// writeStored writes the ciphertext set atomically at 0600.
+func writeStored(stored map[string]string) error {
 	if err := os.MkdirAll(filepath.Dir(credentialsPath()), 0o700); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(enc, "", "  ")
+	b, err := json.MarshalIndent(stored, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -149,20 +161,30 @@ func saveCredentials(m map[string]string) error {
 	return os.Rename(tmp, credentialsPath())
 }
 
-// saveCredential sets one provider's key and persists.
+// saveCredential sets one provider's key. Every other entry is rewritten as the
+// ciphertext it was, so a key this run cannot decrypt is kept, not dropped.
 func saveCredential(name, key string) error {
-	m := loadCredentials()
-	m[name] = key
-	return saveCredentials(m)
+	stored, err := readStored()
+	if err != nil {
+		return err
+	}
+	ct, err := encrypt(key)
+	if err != nil {
+		return err
+	}
+	stored[name] = ct
+	return writeStored(stored)
 }
 
-// deleteCredential removes one provider's key. The bool reports whether a key
-// was actually present, so the caller can tell the user something useful.
-func deleteCredential(name string) (bool, error) {
-	m := loadCredentials()
-	if _, ok := m[name]; !ok {
-		return false, nil
+// deleteCredential removes one provider's key; a missing one is not an error.
+func deleteCredential(name string) error {
+	stored, err := readStored()
+	if err != nil {
+		return err
 	}
-	delete(m, name)
-	return true, saveCredentials(m)
+	if _, ok := stored[name]; !ok {
+		return nil
+	}
+	delete(stored, name)
+	return writeStored(stored)
 }
