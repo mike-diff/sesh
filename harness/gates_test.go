@@ -2,6 +2,7 @@ package harness
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/mike-diff/sesh/agent"
@@ -22,8 +23,9 @@ func TestGateModResolvesPerCall(t *testing.T) {
 		t.Fatalf("with no mod installed a mutating call must pass: %v", err)
 	}
 
-	os.MkdirAll(".sesh", 0o755)
-	os.WriteFile(".sesh/gate", []byte("#!/bin/sh\nexit 1\n"), 0o755)
+	global := filepath.Join(os.Getenv("HOME"), ".sesh")
+	os.MkdirAll(global, 0o755)
+	os.WriteFile(filepath.Join(global, "gate"), []byte("#!/bin/sh\nexit 1\n"), 0o755)
 	if err := g(call); err == nil {
 		t.Fatal("a gate mod installed mid-session must deny the next call")
 	}

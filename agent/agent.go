@@ -49,10 +49,14 @@ type Turn struct {
 // ThinkingBlock is one reasoning block from a thinking model. Signature is
 // the provider's authenticity tag for the block; RedactedData is set when the
 // provider returned encrypted reasoning, passed back verbatim.
+// Model names the model that produced the block: reasoning is only valid
+// input to the model that wrote it, so a provider replays matching blocks and
+// drops the rest after a switch.
 type ThinkingBlock struct {
 	Text         string `json:"text,omitempty"`
 	Signature    string `json:"signature,omitempty"`
 	RedactedData string `json:"redacted_data,omitempty"`
+	Model        string `json:"model,omitempty"`
 }
 
 // Image is one image carried on a user Turn. Hash and metadata persist with the
@@ -74,19 +78,23 @@ type ToolDef struct {
 }
 
 // Usage is what one model call cost, when the provider reports it. Input,
-// Output, and CacheRead accumulate across a turn's calls; LastInput is the
-// final call's full prompt size (input plus cache reads), which is the
-// current context size the caller can report or act on.
+// Output, CacheRead, and CacheWrite accumulate across a turn's calls; LastInput
+// is the final call's full prompt size (uncached input plus cache reads and
+// writes), which is the current context size the caller can report or act on.
 type Usage struct {
-	Input     int
-	Output    int
-	CacheRead int // input tokens served from the prompt cache at ~10% price
-	LastInput int
+	Input      int // uncached input tokens
+	Output     int
+	CacheRead  int // input tokens served from the prompt cache at a fraction of the price
+	CacheWrite int // input tokens written to the prompt cache (billed above the base price)
+	LastInput  int
 }
 
 func (u Usage) Add(v Usage) Usage {
-	return Usage{u.Input + v.Input, u.Output + v.Output, u.CacheRead + v.CacheRead, u.LastInput}
+	return Usage{u.Input + v.Input, u.Output + v.Output, u.CacheRead + v.CacheRead, u.CacheWrite + v.CacheWrite, u.LastInput}
 }
+
+// prompt is the full input size of one call: every input token, cached or not.
+func (u Usage) prompt() int { return u.Input + u.CacheRead + u.CacheWrite }
 
 type Reply struct {
 	Text     string
@@ -178,6 +186,8 @@ func runCalls(ctx context.Context, calls []ToolCall, byName map[string]Tool, h H
 			switch tool, ok := byName[c.Name]; {
 			case !ok:
 				out, isErr = "unknown tool: "+c.Name, true
+			case !isObject(c.Args):
+				out, isErr = badArgs(c), true
 			default:
 				if gateErr := h.Gate(c); gateErr != nil {
 					out, isErr = gateErr.Error(), true
@@ -197,6 +207,10 @@ func runCalls(ctx context.Context, calls []ToolCall, byName map[string]Tool, h H
 	sem := make(chan struct{}, maxParallelTools)
 	for i, c := range calls {
 		h.OnToolStart(c)
+		if !isObject(c.Args) {
+			results[i] = ToolResult{ID: c.ID, Content: badArgs(c), IsError: true}
+			continue
+		}
 		if gateErr := h.Gate(c); gateErr != nil {
 			results[i] = ToolResult{ID: c.ID, Content: gateErr.Error(), IsError: true}
 			continue
@@ -215,6 +229,20 @@ func runCalls(ctx context.Context, calls []ToolCall, byName map[string]Tool, h H
 		h.OnToolEnd(c, results[i])
 	}
 	return results
+}
+
+// isObject reports whether a call's arguments are a complete JSON object, the
+// only shape a tool is ever handed. A reply cut off at its output limit leaves
+// the last call's arguments unfinished; running that call would act on half
+// an input.
+func isObject(raw json.RawMessage) bool {
+	var obj map[string]json.RawMessage
+	return json.Unmarshal(raw, &obj) == nil && obj != nil
+}
+
+func badArgs(c ToolCall) string {
+	return "the arguments for " + c.Name + " were not a complete JSON object, so nothing ran " +
+		"(a reply cut off at its output token limit does this); resend the call, splitting large content across several smaller calls"
 }
 
 // maxResultChars caps what any one tool result may add to the context window.
@@ -247,7 +275,7 @@ func Run(ctx context.Context, p Provider, system string, history []Turn, tools [
 			return history, spent, err
 		}
 		spent = spent.Add(reply.Usage)
-		spent.LastInput = reply.Usage.Input + reply.Usage.CacheRead
+		spent.LastInput = reply.Usage.prompt()
 		u := reply.Usage
 		u.LastInput = spent.LastInput
 		h.OnUsage(u) // per round-trip, so the caller can update totals mid-turn

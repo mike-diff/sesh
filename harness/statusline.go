@@ -36,9 +36,12 @@ type statusInfo struct {
 
 func renderStatus(info statusInfo) string {
 	for _, p := range []string{
-		".sesh/statusline", // project
+		".sesh/statusline", // project, once trusted
 		filepath.Join(os.Getenv("HOME"), ".sesh", "statusline"), // global
 	} {
+		if p == ".sesh/statusline" && !projectModsOK() {
+			continue
+		}
 		if fi, err := os.Stat(p); err != nil || fi.Mode()&0o111 == 0 {
 			continue
 		}

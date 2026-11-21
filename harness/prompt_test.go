@@ -28,6 +28,7 @@ func TestSystemPromptChain(t *testing.T) {
 	// APPEND_SYSTEM.md rides on top of the default
 	os.MkdirAll(".sesh", 0o755)
 	os.WriteFile(".sesh/APPEND_SYSTEM.md", []byte("EXTRA-RULE-42"), 0o644)
+	trustProjectMods(t)
 	got = systemPrompt()
 	if !strings.Contains(got, "<role>") || !strings.Contains(got, "EXTRA-RULE-42") {
 		t.Fatalf("append should add to the default, got: %.80s...", got)
@@ -42,6 +43,7 @@ func TestSystemPromptChain(t *testing.T) {
 
 	// SYSTEM.md replaces the default entirely, but append and context remain
 	os.WriteFile(".sesh/SYSTEM.md", []byte("CUSTOM PERSONA"), 0o644)
+	trustProjectMods(t)
 	got = systemPrompt()
 	if strings.Contains(got, "<role>") {
 		t.Fatal("custom SYSTEM.md must replace the default")

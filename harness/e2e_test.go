@@ -716,12 +716,35 @@ func TestE2E(t *testing.T) {
 		os.MkdirAll(filepath.Join(dir, ".sesh"), 0o755)
 		os.WriteFile(filepath.Join(dir, ".sesh", "gate"), []byte("#!/bin/sh\necho 'no writes here'\nexit 1\n"), 0o755)
 
-		m.run(t, dir, "write x.txt")
+		m.run(t, dir, "write x.txt", "-trust")
 		if res := m.lastToolResult(t, 2); !strings.Contains(res, "gate mod denied") {
 			t.Fatalf("the gate mod must rule the mutating call, got:\n%s", res)
 		}
 		if _, err := os.Stat(filepath.Join(dir, "x.txt")); err == nil {
 			t.Fatal("a denied write must not touch disk")
+		}
+	})
+
+	// A cloned repo's .sesh/ must not run code in an unattended run that did
+	// not pass -trust, and the run must say what it skipped. Breaker: drop the
+	// projectModsOK check from findGateMod and the marker file appears.
+	t.Run("UntrustedProjectGateSkipped", func(t *testing.T) {
+		m, dir := newRig(t,
+			[]e2eStep{eTool("write", `{"path":"x.txt","content":"yes"}`), eText("wrote it")},
+			[]e2eStep{verdictJSON("done")})
+		os.MkdirAll(filepath.Join(dir, ".sesh"), 0o755)
+		marker := filepath.Join(dir, "gate-ran")
+		os.WriteFile(filepath.Join(dir, ".sesh", "gate"), []byte("#!/bin/sh\ntouch "+marker+"\nexit 1\n"), 0o755)
+
+		_, errb := m.run(t, dir, "write x.txt")
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatal("an untrusted project gate executed in print mode")
+		}
+		if !strings.Contains(errb, "not trusted") {
+			t.Fatalf("the run must announce the skipped project mods, stderr:\n%s", errb)
+		}
+		if !strings.Contains(errb, "== usage: in=") {
+			t.Fatalf("print mode must close with the usage line, stderr:\n%s", errb)
 		}
 	})
 

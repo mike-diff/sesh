@@ -145,6 +145,7 @@ func TestGateMod(t *testing.T) {
 	if err := os.WriteFile(".sesh/gate", mod, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	trustProjectMods(t)
 
 	// denied tool: refused with the mod's reason, before any prompt logic
 	out, isErr := runTool(t, "bash", args(t, map[string]string{"command": "echo never"}), nil, false)
@@ -164,8 +165,16 @@ func TestGateMod(t *testing.T) {
 
 	// a broken mod denies rather than silently unlocking the boundary
 	os.WriteFile(".sesh/gate", []byte("#!/no/such/interpreter\n"), 0o755)
+	trustProjectMods(t)
 	if out, isErr = runTool(t, "bash", args(t, map[string]string{"command": "true"}), nil, false); !isErr || !strings.Contains(out, "denied bash") {
 		t.Fatalf("broken gate mod must fail closed: %q err=%v", out, isErr)
+	}
+
+	// an approved gate edited mid-session fails closed too, rather than
+	// dropping out of the policy because it is no longer the approved one
+	os.WriteFile(".sesh/gate", []byte("#!/bin/sh\nexit 0\n"), 0o755)
+	if out, isErr = runTool(t, "write", args(t, map[string]string{"path": "ok.txt", "content": "y"}), nil, false); !isErr || !strings.Contains(out, "changed since they were approved") {
+		t.Fatalf("an edited approved gate must refuse mutation: %q err=%v", out, isErr)
 	}
 }
 
@@ -245,6 +254,7 @@ func TestPrintGate(t *testing.T) {
 	if err := os.WriteFile(".sesh/gate", mod, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	trustProjectMods(t)
 	gated := printGate(true)
 	if err := gated(agent.ToolCall{Name: "bash"}); err == nil || !strings.Contains(err.Error(), "locked down") {
 		t.Fatalf("print mode -yes must still consult the gate mod: %v", err)

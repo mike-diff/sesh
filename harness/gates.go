@@ -109,9 +109,12 @@ type gateInfo struct {
 // none. Resolved once per session, like the system prompt.
 func findGateMod() string {
 	for _, p := range []string{
-		".sesh/gate", // project
+		".sesh/gate", // project, once trusted
 		filepath.Join(os.Getenv("HOME"), ".sesh", "gate"), // global
 	} {
+		if p == ".sesh/gate" && !projectModsOK() {
+			continue
+		}
 		if fi, err := os.Stat(p); err == nil && fi.Mode()&0o111 != 0 {
 			return p
 		}
@@ -127,6 +130,12 @@ func findGateMod() string {
 // a gate installed or fixed mid-session binds at the next mutation, which is
 // exactly when an unattended run needs it to.
 func runGateMod(tc agent.ToolCall) error {
+	// An approved project gate that changed since approval must not become
+	// an unlocked one: whoever edited it (the agent's own bash included)
+	// would otherwise remove the boundary by breaking it.
+	if approvedProjectMods != "" && !projectModsOK() {
+		return fmt.Errorf("this project's .sesh/ mods changed since they were approved, so %s is refused; ask the user to restart sesh and review them", tc.Name)
+	}
 	mod := findGateMod()
 	if mod == "" {
 		return nil

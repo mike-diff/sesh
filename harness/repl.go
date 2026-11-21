@@ -56,6 +56,7 @@ type repl struct {
 	acctMu                     sync.Mutex
 	turns                      int
 	totIn, totOut, totCache    int
+	totWrite                   int // prompt-cache writes; shown only in print mode's usage line
 	liveIn, liveOut, liveCache int // the in-progress turn's usage, shown until account commits it
 	ctxTokens                  int // the last call's full prompt size = current context
 	// spinBase is the status line the working-time spinner decorates. It is
@@ -75,6 +76,7 @@ func (r *repl) account(spent agent.Usage) {
 	r.totIn += spent.Input
 	r.totOut += spent.Output
 	r.totCache += spent.CacheRead
+	r.totWrite += spent.CacheWrite
 	if spent.LastInput > 0 {
 		r.ctxTokens = spent.LastInput
 	}
@@ -110,6 +112,7 @@ func (r *repl) accountChild(u agent.Usage) {
 	r.totIn += u.Input
 	r.totOut += u.Output
 	r.totCache += u.CacheRead
+	r.totWrite += u.CacheWrite
 	r.acctMu.Unlock()
 }
 
@@ -121,6 +124,7 @@ func (r *repl) accountAux(spent agent.Usage) {
 	r.totIn += spent.Input
 	r.totOut += spent.Output
 	r.totCache += spent.CacheRead
+	r.totWrite += spent.CacheWrite
 	r.acctMu.Unlock()
 	r.setSpinBase()
 }
@@ -692,9 +696,9 @@ func (r *repl) providerAdd() {
 		emit("%s  cancelled%s\n\n", dim, reset)
 		return
 	}
-	proto := ask(r.con, "  protocol (openai/anthropic)", "openai")
-	if proto != "openai" && proto != "anthropic" {
-		emit("%s  protocol must be openai or anthropic%s\n\n", red, reset)
+	proto := ask(r.con, "  protocol (openai/anthropic/responses)", "openai")
+	if proto != "openai" && proto != "anthropic" && proto != "responses" {
+		emit("%s  protocol must be openai, anthropic, or responses%s\n\n", red, reset)
 		return
 	}
 	nurl := ask(r.con, "  base url (blank for the protocol default)", "")
@@ -1256,6 +1260,9 @@ func (r *repl) afterTurn(spent agent.Usage) {
 		emit("%s  tokens: in %d", dim, spent.Input)
 		if spent.CacheRead > 0 {
 			emit(" (+%d cached)", spent.CacheRead)
+		}
+		if spent.CacheWrite > 0 {
+			emit(" (+%d cache write)", spent.CacheWrite)
 		}
 		emit(" · out %d%s\n", spent.Output, reset)
 	}

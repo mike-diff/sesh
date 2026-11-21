@@ -82,7 +82,7 @@ func TestOnUsageFiresPerCall(t *testing.T) {
 	tools := []Tool{tool("touch", func(json.RawMessage) (string, bool) { return "ok", false })}
 	p := &scripted{replies: []Reply{
 		{Calls: []ToolCall{{ID: "1", Name: "touch", Args: json.RawMessage(`{}`)}}, Usage: Usage{Input: 100, Output: 20, CacheRead: 5}},
-		{Text: "done", Usage: Usage{Input: 200, Output: 30, CacheRead: 50}},
+		{Text: "done", Usage: Usage{Input: 200, Output: 30, CacheRead: 50, CacheWrite: 7}},
 	}}
 	var got []Usage
 	h := Hooks{OnUsage: func(u Usage) { got = append(got, u) }}
@@ -95,7 +95,8 @@ func TestOnUsageFiresPerCall(t *testing.T) {
 	if want := (Usage{Input: 100, Output: 20, CacheRead: 5, LastInput: 105}); got[0] != want {
 		t.Fatalf("first call: %+v, want %+v", got[0], want)
 	}
-	if want := (Usage{Input: 200, Output: 30, CacheRead: 50, LastInput: 250}); got[1] != want {
+	// Cache writes are prompt tokens too: leaving them out under-reads the context gauge.
+	if want := (Usage{Input: 200, Output: 30, CacheRead: 50, CacheWrite: 7, LastInput: 257}); got[1] != want {
 		t.Fatalf("second call: %+v, want %+v", got[1], want)
 	}
 }
@@ -270,5 +271,33 @@ func TestParallelGateStillApplies(t *testing.T) {
 	}
 	if !results[1].IsError || !strings.Contains(results[1].Content, "declined") {
 		t.Fatalf("declined call must yield an ordered error result: %+v", results[1])
+	}
+}
+
+// TestIncompleteArgsNeverRun: a call whose arguments are not a complete JSON
+// object (a reply cut off at its output limit) must not reach the tool, in
+// either the sequential or the parallel path, and the model is told why.
+func TestIncompleteArgsNeverRun(t *testing.T) {
+	for _, parallel := range []bool{false, true} {
+		var ran atomic.Int32
+		w := tool("write", func(json.RawMessage) (string, bool) { ran.Add(1); return "ok", false })
+		w.Parallel = parallel
+		cut := json.RawMessage(`"{\"path\": \"a.go\", \"cont"`) // a provider's wrapped fragment
+		calls := []ToolCall{{ID: "1", Name: "write", Args: cut}}
+		if parallel {
+			calls = append(calls, ToolCall{ID: "2", Name: "write", Args: json.RawMessage(`{}`)})
+		}
+		p := &scripted{replies: []Reply{{Calls: calls}, {Text: "done"}}}
+		hist, _, err := Run(context.Background(), p, "sys", []Turn{{Role: "user", Text: "go"}}, []Tool{w}, Hooks{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := int32(len(calls) - 1); ran.Load() != want {
+			t.Fatalf("parallel=%v: tool ran %d times, want %d (only complete calls)", parallel, ran.Load(), want)
+		}
+		r := hist[2].Results[0]
+		if !r.IsError || !strings.Contains(r.Content, "not a complete JSON object") {
+			t.Fatalf("parallel=%v: result %+v", parallel, r)
+		}
 	}
 }

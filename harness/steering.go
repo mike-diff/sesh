@@ -79,7 +79,11 @@ func systemPrompt() string {
 	home := os.Getenv("HOME")
 
 	prompt := fmt.Sprintf(defaultPromptTemplate, cwd)
+	trusted := projectModsOK()
 	for _, p := range []string{".sesh/SYSTEM.md", filepath.Join(home, ".sesh", "SYSTEM.md")} {
+		if p == ".sesh/SYSTEM.md" && !trusted {
+			continue
+		}
 		if b, err := os.ReadFile(p); err == nil && len(strings.TrimSpace(string(b))) > 0 {
 			prompt = string(b)
 			break
@@ -90,6 +94,9 @@ func systemPrompt() string {
 	// combine (global first, then project, which overrides by coming later):
 	// a project file must never silently erase the user's global rules.
 	for _, p := range []string{filepath.Join(home, ".sesh", "APPEND_SYSTEM.md"), ".sesh/APPEND_SYSTEM.md"} {
+		if p == ".sesh/APPEND_SYSTEM.md" && !trusted {
+			continue
+		}
 		if b, err := os.ReadFile(p); err == nil && len(strings.TrimSpace(string(b))) > 0 {
 			prompt += "\n\n" + strings.TrimSpace(string(b))
 		}
@@ -97,14 +104,54 @@ func systemPrompt() string {
 	return prompt + projectContext()
 }
 
-// projectContext wraps the working directory's AGENTS.md or CLAUDE.md for the
-// system prompt. Subagents get it too: a scout that does not know the project
-// conventions reports against the wrong rules.
+// projectContext wraps the project's AGENTS.md or CLAUDE.md files for the
+// system prompt: one per directory from the git root down to the working
+// directory, root first so nearer guidance comes later and reads as the
+// override. Read once per prompt build, never as the agent wanders: a file
+// picked up mid-session would change the prompt and break the cache.
+// Subagents get it too: a scout that does not know the project conventions
+// reports against the wrong rules.
 func projectContext() string {
-	for _, p := range []string{"AGENTS.md", "CLAUDE.md"} {
-		if b, err := os.ReadFile(p); err == nil && len(strings.TrimSpace(string(b))) > 0 {
-			return fmt.Sprintf("\n\n<project_context path=%q>\n%s\n</project_context>", p, strings.TrimSpace(string(b)))
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	var dirs []string // nearest first
+	for d := cwd; ; d = filepath.Dir(d) {
+		dirs = append(dirs, d)
+		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			break
+		}
+		if filepath.Dir(d) == d {
+			dirs = dirs[:1] // not a repository: the working directory alone
+			break
 		}
 	}
-	return ""
+	var blocks []string
+	used, dropped := 0, 0
+	for _, d := range dirs {
+		for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+			b, err := os.ReadFile(filepath.Join(d, name))
+			text := strings.TrimSpace(string(b))
+			if err != nil || text == "" {
+				continue
+			}
+			rel, _ := filepath.Rel(cwd, filepath.Join(d, name))
+			if used+len(text) > tune.ProjectContextMax && len(blocks) > 0 {
+				dropped++
+				break
+			}
+			used += len(text)
+			blocks = append([]string{fmt.Sprintf("<project_context path=%q>\n%s\n</project_context>", rel, text)}, blocks...)
+			break // one file per directory
+		}
+	}
+	if len(blocks) == 0 {
+		return ""
+	}
+	out := "\n\n" + strings.Join(blocks, "\n\n")
+	if dropped > 0 {
+		out += fmt.Sprintf("\n\n(%d farther project instruction file(s) omitted: the project_context_max dial is %d bytes)", dropped, tune.ProjectContextMax)
+	}
+	return out
 }

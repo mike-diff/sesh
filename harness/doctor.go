@@ -267,7 +267,7 @@ func probeContext(ctx context.Context, p agent.Provider) (reported, sent int, er
 	if err != nil {
 		return 0, probePadWords, err
 	}
-	return reply.Usage.Input + reply.Usage.CacheRead, probePadWords, nil
+	return reply.Usage.Input + reply.Usage.CacheRead + reply.Usage.CacheWrite, probePadWords, nil
 }
 
 // truncationVerdict turns probe numbers into a diagnosis. sent counts padding

@@ -8,7 +8,8 @@ deciding how to extend the code, and an agent working inside this repo.
 
 A minimal coding agent: a loop that lets a model read, search, write, edit,
 and run shell commands until a task is done. Standard library only, zero
-dependencies, one binary, two wire protocols (Anthropic and OpenAI).
+dependencies, one binary, three wire protocols (Anthropic Messages, OpenAI
+chat completions, and stateless OpenAI Responses).
 
 It exists to prove one claim: an agent harness is a small, knowable thing. The
 irreducible core is a loop calling a model with tools and feeding the results
@@ -22,10 +23,11 @@ refuses to own policy. So the code splits along exactly that line:
 - **`agent/`** is the core. The neutral conversation types and the loop. It
   never prints, never reads input, and never decides whether an action is
   allowed. It is the part you should almost never need to touch.
-- **`provider/`** is the brain seam. Two adapters translate our neutral types
-  to and from each wire format, streaming included. A session recorded against
-  one provider resumes against the other, because neither protocol leaks past
-  this package.
+- **`provider/`** is the brain seam. Three adapters translate our neutral
+  types to and from each wire format, streaming included. A session recorded
+  against one provider resumes against another, because no protocol leaks past
+  this package. Reasoning is kept with the turn that produced it and replayed
+  only to the model that wrote it.
 - **`harness/`** is the product: one package, deliberately. Package
   boundaries are API contracts, and freezing policy code behind contracts is
   the pin-yourself trap; one package keeps full refactor freedom while
@@ -45,7 +47,8 @@ refuses to own policy. So the code splits along exactly that line:
   (the console seam), `brains.go` (provider selection), `install.go` and
   `scaffold.go` (the install story), the engines (`skills.go`, `mcp.go`,
   `engines.go`: progressive disclosure for instructions and external tool
-  servers), plus sessions, providers, credentials,
+  servers), `trust.go` (approval for project mods that run code, route keys,
+  or replace prompts), plus sessions, providers, credentials,
   tuning, tool mods, doctor, statusline, history, help, and the editbench
   seams. The binary is `cmd/sesh`, three lines. When in doubt, new behavior belongs in
   `harness/`, not in the core.
@@ -143,7 +146,12 @@ The core exposes one small surface, and the product fills it in:
 - **Boundaries live in code, not prose.** The file tools refuse paths outside
   the working directory, with symlinks resolved so a link cannot smuggle an
   operation out of the tree (`-unsafe-paths` is the deliberate opt-out), and
-  they always refuse `~/.sesh`. A constraint that exists only in the system
+  they always refuse `~/.sesh`. Writes also refuse `.git` (hooks run code)
+  and the project's `.sesh/` (the agent must not edit its own gate or judge).
+  A project's `.sesh/gate`, `statusline`, `providers.json`, `SYSTEM.md`,
+  `APPEND_SYSTEM.md`, and `prompts/` take effect only once the user approves
+  them (asked at startup, `-trust` in print mode) and only while unchanged,
+  since in a cloned repo they are someone else's code. A constraint that exists only in the system
   prompt is a request, not a boundary. `bash` is the one documented exception;
   containerize when that matters.
 
@@ -161,7 +169,8 @@ hand. Everything is driven from the prompt:
 A brand-new run with nothing configured still starts (no usable provider is not
 fatal in interactive mode); it just prints "run /provider add". The config is
 resolved with the same file chain as the steering prompt: `~/.sesh/providers.json`
-(global, where add/remove write), overlaid by `.sesh/providers.json` (project).
+(global, where add/remove write), overlaid by `.sesh/providers.json` (project,
+once trusted: a project profile can repoint where a stored key is sent).
 Flags (`-provider`, `-protocol`, `-url`, `-model`) override per field, and a
 resumed session keeps its own brain.
 

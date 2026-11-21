@@ -14,7 +14,7 @@ sesh was created with a few things in mind:
 - **Stop when you're done, not when the model stops.** A fresh-context judge reads your request and the transcript and decides whether the task is actually finished, so sesh keeps working past a single reply until the work is verified done (see [the drive loop](#the-drive-loop)).
 - **Autonomy by default, with explicit dials.** Tools run without per-call prompts; you watch the transcript and Ctrl-C is the brake. The safety dials are real and live in code, not in the prompt (see [Autonomy by default](#autonomy-by-default)).
 
-The reasoning behind each belief is in [AGENTS.md](AGENTS.md). sesh automatically appends a project's `AGENTS.md` or `CLAUDE.md` (from the directory you launch it in) to the system prompt, so this file is also how sesh steers itself in its own repo.
+The reasoning behind each belief is in [AGENTS.md](AGENTS.md). sesh automatically appends a project's `AGENTS.md` or `CLAUDE.md` (one per directory, from the git root down to where you launch it) to the system prompt, so this file is also how sesh steers itself in its own repo.
 
 ## What makes sesh different
 
@@ -60,7 +60,7 @@ On first run no provider is configured. Set one up from inside the session; the 
 ```
 -> /provider add
   name: local
-  protocol (openai/anthropic) [openai]:
+  protocol (openai/anthropic/responses) [openai]:
   base url (blank for the protocol default): http://localhost:8080/v1
   api key (blank for none):
   discovered 12 models
@@ -151,10 +151,12 @@ If you run sesh unattended, setting up a gate mod first is HIGHLY recommended: i
 
 Every customization is a file you drop into a mount point. No recompile, no plugin runtime, no registration: sesh looks for well-known filenames and uses what it finds. Global mods live in `~/.sesh/`; a project's `.sesh/` (gitignore it) overlays them for that project only.
 
+A project's `gate`, `statusline`, `providers.json`, `SYSTEM.md`, `APPEND_SYSTEM.md`, and `prompts/` can run code, repoint where a stored key is sent, or replace sesh's own judge, so in a repo you just cloned they are someone else's. sesh asks once at startup before using them, remembers the answer until any of them changes, and in print mode uses them only with `-trust`.
+
 | Mod | What it does |
 |---|---|
 | `SYSTEM.md` / `APPEND_SYSTEM.md` | replace or extend the system prompt |
-| `AGENTS.md` / `CLAUDE.md` | project context, auto-appended to the system prompt (read from the launch directory) |
+| `AGENTS.md` / `CLAUDE.md` | project context, auto-appended to the system prompt (one per directory, git root down to the launch directory) |
 | `statusline` | an executable that owns the footer status line |
 | `gate` | an executable that rules on every mutating call (fails closed) |
 | `providers.json` | named provider profiles (managed by `/provider`) |
@@ -167,7 +169,7 @@ Every customization is a file you drop into a mount point. No recompile, no plug
 The last two are considered **engines** and they bring progressive disclosure: a manifest the model always sees, payloads loaded only when a task calls for them and zero tokens until you add content.
 
 - **Skills.** Drop an [Agent Skill](https://agentskills.io) folder (`SKILL.md` plus optional `scripts/`, `references/`, `assets/`) into `~/.sesh/skills/<name>/`. The `skill` tool then carries one manifest line per skill and loads a body only when the task matches.
-- **MCP servers.** Define servers in `~/.sesh/mcp.json`, global mount only since a server is code running with your permissions (the standard `mcpServers` shape: stdio via `command`, remote via `url`). The `mcp` tool lists every `server:tool` from a cached manifest; servers spawn lazily and every call is gated, so a gate mod can write per-server policy. Toggle a server with `"disabled": true`, or pick the active set per project with a `.sesh/mcp.json` like `{"servers": ["github"]}`.
+- **MCP servers.** Define servers in `~/.sesh/mcp.json`, global mount only since a server is code running with your permissions (the standard `mcpServers` shape: stdio via `command`, remote via `url`). The `mcp` tool lists every `server:tool` from a cached manifest and hands the model a tool's argument schema on request; servers spawn lazily and every call is gated, so a gate mod can write per-server policy. Toggle a server with `"disabled": true`, or pick the active set per project with a `.sesh/mcp.json` like `{"servers": ["github"]}`.
 
 On first run sesh scaffolds `~/.sesh` with a short guide and an example for each mod type.
 
@@ -176,8 +178,9 @@ On first run sesh scaffolds `~/.sesh` with a short guide and an example for each
 ```
 agent/      the core: neutral types + the loop. Never prints, never reads
             input, never decides whether an action is allowed.
-provider/   the wire seam: Anthropic Messages and OpenAI chat-completions
-            adapters, hand-rolled SSE, retries, model discovery.
+provider/   the wire seam: Anthropic Messages, OpenAI chat-completions, and
+            stateless OpenAI Responses adapters, hand-rolled SSE, retries,
+            reasoning replay, model discovery.
 harness/    the product: one package (full refactor freedom), where every
             policy lives. Prompts, tools, search, edit, oversight, rendering,
             the drive loop, handoff chains, the engines.

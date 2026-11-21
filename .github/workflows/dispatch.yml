@@ -89,7 +89,8 @@ jobs:
         run: |
           # The repo keeps .sesh/ fully gitignored (personal mods only), so the
           # dispatch agent definition lives in tracked .github/dispatch/ and is
-          # assembled into a project .sesh/ here. sesh loads it on startup.
+          # assembled into a project .sesh/ here. sesh loads it on startup;
+          # the run passes -trust because it built this .sesh/ itself.
           mkdir -p .sesh/skills
           cp .github/dispatch/APPEND_SYSTEM.md .sesh/APPEND_SYSTEM.md
           cp .github/dispatch/providers.json    .sesh/providers.json
@@ -162,6 +163,7 @@ jobs:
             fi
             out=$(~/.local/bin/sesh -p "$(cat TASK.md)" \
               -yes \
+              -trust \
               -provider zai \
               -model glm-5.2 \
               -max-iters 40 \

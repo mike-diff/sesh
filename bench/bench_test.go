@@ -117,8 +117,11 @@ func sandboxProviders(t *testing.T, homeDir string, ctxTokens int) string {
 	if !ok {
 		t.Skipf("provider %q not found in %s/providers.json; set SESH_BENCH_PROVIDER", name, src)
 	}
-	// Force handoffs: a small window hands off near its limit.
-	prof["context"] = ctxTokens
+	// Force handoffs: a small window hands off near its limit. Zero keeps the
+	// profile's own window (the task bench measures tasks, not boundaries).
+	if ctxTokens > 0 {
+		prof["context"] = ctxTokens
+	}
 	if m := os.Getenv("SESH_BENCH_MODEL"); m != "" {
 		prof["model"] = m
 	}

@@ -83,11 +83,15 @@ MODEL TOOLS (what the agent inside can do)
                                without killing it, survives handoffs, and is
                                reaped when the session exits.
 
-FILES AND MODS (project .sesh/ overrides global ~/.sesh/)
+FILES AND MODS (project .sesh/ overrides global ~/.sesh/; a project's gate,
+statusline, providers.json, SYSTEM.md, APPEND_SYSTEM.md, and prompts/ apply only
+once approved at startup, or with -trust, and only while unchanged)
   providers.json               named provider profiles (managed by /provider);
                                "vision": true|false overrides image support (default
                                by name); "no_tools": true sends no tools (tools-less
-                               models, e.g. local vision models)
+                               models, e.g. local vision models); "effort",
+                               "thinking_budget", "reasoning_effort", "cache_ttl"
+                               tune reasoning and caching per profile
   credentials.json, key        AES-256-GCM encrypted API keys (0600)
   SYSTEM.md / APPEND_SYSTEM.md replace / extend the system prompt
   prompts/<name>.md            override model-facing templates: brief, judge,
@@ -100,7 +104,8 @@ FILES AND MODS (project .sesh/ overrides global ~/.sesh/)
                                input_max_rows, brief_provider, brief_model,
                                judge_provider, judge_model, result_max_chars,
                                result_head_pct, result_spill_off, result_keep_days,
-                               transcript_result (state only what you change)
+                               transcript_result, project_context_max (state
+                               only what you change)
   tools/<name>                 executables that become agent tools (global
                                mount only): --schema describes, args JSON on
                                stdin, stdout is the result; mutating ones

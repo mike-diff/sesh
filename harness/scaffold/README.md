@@ -39,11 +39,20 @@ Beyond the wizard's basics, a profile accepts fields the adapters consume
                              // max_output_tokens tuning default; a 400 naming
                              // the model's real cap self-heals to it. openai:
                              // sesh sends a cap only when this is set
-    "thinking_budget": 10000 // anthropic extended thinking, per reply;
-                             // thinking bills as output and max_tokens is
-                             // raised to clear the budget. Default off
-    "reasoning_effort": "high" // openai-protocol reasoning hint, passed
-                             // through where the server supports one
+    "effort": "medium"       // how much the model spends per reply, thinking
+                             // included (low/medium/high/xhigh/max, as the
+                             // model supports). anthropic: output_config.effort;
+                             // openai and responses: the reasoning effort.
+                             // Default: the model's own
+    "thinking_budget": 10000 // anthropic extended thinking, per reply, for
+                             // models that take a budget (adaptive-thinking
+                             // models reject it: use effort). Thinking bills
+                             // as output and max_tokens is raised to clear it.
+                             // Default off
+    "reasoning_effort": "high" // openai-protocol reasoning hint; overrides
+                             // effort on the openai and responses protocols
+    "cache_ttl": "1h"        // anthropic prompt-cache lifetime ("5m" default);
+                             // longer survives pauses, costs more to write
     "vision": true           // force image support on/off (default: name
                              // heuristic; unknown models are text-only)
 

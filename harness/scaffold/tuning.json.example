@@ -73,6 +73,8 @@
   // "result_keep_days": 7,      // how long spilled output outlives its last write
   // "transcript_result": 300,   // per-result budget in the transcript the judge
   //                             // and the brief writer read (also head + tail)
+  // "project_context_max": 32768, // bytes of AGENTS.md/CLAUDE.md gathered from
+  //                             // the git root down to the working directory
 
   // --- Other dials (full reference: ~/.sesh/README.md and -help) ---
   // "task_depth": 3,            // subagent nesting cap
